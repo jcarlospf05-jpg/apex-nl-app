@@ -35,6 +35,8 @@ import unicodedata
 import pandas as pd
 from rapidfuzz import fuzz, process
 
+from ajuste_inflacion import factor_ajuste, ajustar_precio, ETIQUETA_ACTUAL, FUENTE as FUENTE_INPC
+
 LEADING_CODE_RE = re.compile(r'^\s*[\d.]{1,15}\s+')
 WS_RE = re.compile(r'\s+')
 
@@ -112,7 +114,8 @@ class ComparadorMultiFuente:
         return float(score), row
 
     def evaluar(self, descripcion: str, unidad: str, precio_cotizado: float,
-                min_score: float = 70.0, scorer=fuzz.token_set_ratio) -> dict:
+                min_score: float = 70.0, scorer=fuzz.token_set_ratio,
+                ajustar_inflacion: bool = True) -> dict:
         t = normalize_text(descripcion)
         u = normalize_unit(unidad)
 
@@ -125,13 +128,26 @@ class ComparadorMultiFuente:
         m = self._match_pool(self._nl_pools, t, u, min_score, scorer)
         if m:
             score, row = m
-            veredicto = clasificar(precio_cotizado, row['precio_p25'], row['precio_p75'])
+            anio_dato = str(row['fecha_max'])[:4]
+            factor = factor_ajuste(anio_dato) if ajustar_inflacion else 1.0
+
+            p25_uso = ajustar_precio(row['precio_p25'], anio_dato) if ajustar_inflacion else float(row['precio_p25'])
+            p75_uso = ajustar_precio(row['precio_p75'], anio_dato) if ajustar_inflacion else float(row['precio_p75'])
+            veredicto = clasificar(precio_cotizado, p25_uso, p75_uso)
+
             resultado['fuentes']['nl_historico'] = {
                 'match': row['concepto_homologado'], 'score': round(score, 1),
                 'precio_min': float(row['precio_min']), 'precio_p25': float(row['precio_p25']),
                 'precio_mediana': float(row['precio_mediana']), 'precio_p75': float(row['precio_p75']),
                 'precio_max': float(row['precio_max']), 'n_registros': int(row['n_registros']),
-                'variabilidad': row['variabilidad'], 'clasificacion': veredicto,
+                'variabilidad': row['variabilidad'],
+                'anio_dato_mas_reciente': anio_dato,
+                'ajuste_inflacion_aplicado': ajustar_inflacion,
+                'factor_ajuste_inpc': round(factor, 4),
+                'precio_p25_ajustado': p25_uso, 'precio_p75_ajustado': p75_uso,
+                'precio_mediana_ajustada': ajustar_precio(row['precio_mediana'], anio_dato) if ajustar_inflacion else float(row['precio_mediana']),
+                'referencia_ajuste': f'INPC INEGI, {anio_dato} -> {ETIQUETA_ACTUAL} ({FUENTE_INPC})' if ajustar_inflacion else None,
+                'clasificacion': veredicto,
             }
         else:
             resultado['fuentes']['nl_historico'] = {'match': None, 'motivo': f'sin coincidencia >= {min_score}% en unidad {u}'}

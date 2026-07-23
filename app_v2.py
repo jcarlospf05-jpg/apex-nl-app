@@ -82,6 +82,12 @@ with st.sidebar:
         disabled=historico is None,
         help="Si está activo, cada partida queda guardada para comparar en el futuro."
     )
+    ajustar_inflacion = st.checkbox(
+        "Ajustar precios viejos de NL por inflación (INPC)", value=True,
+        help="La base de Nuevo León casi no tiene datos desde 2024. Al activar esto, "
+             "los precios de 2021-2023 se actualizan a su equivalente de hoy usando el "
+             "INPC oficial del INEGI, antes de comparar contra tu cotización."
+    )
     if historico is None:
         st.caption("Histórico interno no conectado todavía (falta configurar Google Sheets en Secrets).")
     else:
@@ -112,7 +118,10 @@ if archivo is not None:
             filas = []
             for _, r in cotizacion.iterrows():
                 precio = float(r["precio_unitario"])
-                res = comparador.evaluar(str(r["concepto"]), str(r["unidad"]), precio)
+                res = comparador.evaluar(
+                    str(r["concepto"]), str(r["unidad"]), precio,
+                    ajustar_inflacion=ajustar_inflacion,
+                )
                 nl = res["fuentes"]["nl_historico"]
                 cdmx = res["fuentes"]["cdmx_gobierno"]
 
@@ -121,7 +130,9 @@ if archivo is not None:
                     "Unidad": r["unidad"],
                     "Precio cotizado": precio,
                     "Match NL": nl.get("match"),
-                    "Precio mediana NL": nl.get("precio_mediana"),
+                    "Año del dato NL": nl.get("anio_dato_mas_reciente"),
+                    "Precio mediana NL (original)": nl.get("precio_mediana"),
+                    "Precio mediana NL (ajustado hoy)": nl.get("precio_mediana_ajustada"),
                     "Veredicto NL": nl.get("clasificacion"),
                     "Match CDMX": cdmx.get("match"),
                     "Precio referencia CDMX": cdmx.get("precio_referencia"),
@@ -191,4 +202,12 @@ st.caption(
     "Fuentes: histórico real de licitaciones de obra pública de Nuevo León (SIASI / Open Contracting "
     "Partnership), Tabulador General de Precios Unitarios del Gobierno de la Ciudad de México (edición 2026), "
     "e histórico interno propio guardado en Google Sheets."
+)
+st.caption(
+    "Nota sobre el ajuste por inflación: la base de Nuevo León tiene muy poca información desde 2024 "
+    "(el estado no ha publicado licitaciones más recientes). Cuando el ajuste está activo, los precios "
+    "de años anteriores se actualizan a su equivalente de hoy usando el Índice Nacional de Precios al "
+    "Consumidor (INPC) oficial del INEGI (https://www.inegi.org.mx/temas/inpc/) — el mismo tipo de índice "
+    "que usa la industria de la construcción en México para actualizar costos. El INPC es un índice general "
+    "de consumo, no específico de insumos de construcción, así que es una aproximación razonable, no exacta."
 )
