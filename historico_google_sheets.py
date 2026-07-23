@@ -75,6 +75,23 @@ def numeric_signature(t: str):
     return tuple(sorted(round(float(n), 1) for n in nums))
 
 
+def _to_native(v):
+    """Convierte tipos numpy/pandas (int64, float64, Timestamp, NaN) a tipos
+    nativos de Python para que gspread pueda serializarlos a JSON."""
+    if v is None:
+        return ""
+    if isinstance(v, pd.Timestamp):
+        return v.strftime("%Y-%m-%d")
+    if hasattr(v, "item"):  # numpy int64/float64/bool_
+        v = v.item()
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return v
+
+
 def clasificar(precio, low, high):
     if precio < low:
         return 'BAJO'
@@ -159,7 +176,7 @@ class HistoricoGoogleSheets:
             cid = self._homologar_uno(r['concepto_norm'], r['unidad_norm'])
             fila = {**r.to_dict(), 'cluster_id': cid}
             self.df = pd.concat([self.df, pd.DataFrame([fila])[COLUMNAS]], ignore_index=True)
-            filas_nuevas.append([fila[c] for c in COLUMNAS])
+            filas_nuevas.append([_to_native(fila[c]) for c in COLUMNAS])
 
         # escribe solo las filas nuevas al final de la hoja (rapido, no reescribe todo)
         self.sheet.append_rows(filas_nuevas, value_input_option="USER_ENTERED")

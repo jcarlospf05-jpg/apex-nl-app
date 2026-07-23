@@ -172,7 +172,7 @@ if archivo is not None:
             return ""
 
         st.dataframe(
-            tabla.style.applymap(resaltar, subset=["Veredicto final"]),
+            tabla.style.map(resaltar, subset=["Veredicto final"]),
             use_container_width=True,
             height=min(600, 60 + 35 * len(tabla)),
         )
