@@ -311,8 +311,8 @@ def validar_compatibilidad_tecnica(
             extraer_diametro_pulgadas(descripcion_referencia),
         ),
     ]
-
-      for nombre, entrada, referencia in validaciones:
+  
+    for nombre, entrada, referencia in validaciones:
         if (
             entrada is not None
             and referencia != entrada
@@ -324,7 +324,6 @@ def validar_compatibilidad_tecnica(
             )
 
     return True, None
-
 
 
 
