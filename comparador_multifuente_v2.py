@@ -65,9 +65,9 @@ def extraer_amperaje(texto: str):
     texto = normalize_text(texto)
 
     patrones = [
-    r'\b\d+\s*X\s*(\d+(?:\.\d+)?)\s*(?:A|AMPS?\.?|AMPERES?)\b',
-    r'\b(\d+(?:\.\d+)?)\s*(?:A|AMPS?\.?|AMPERES?)\b',
-]
+        r'\b\d+\s*X\s*(\d+(?:\.\d+)?)\s*(?:A|AMPS?\.?|AMPERES?)\b',
+        r'\b(\d+(?:\.\d+)?)\s*(?:A|AMPS?\.?|AMPERES?)\b',
+    ]
 
     for patron in patrones:
         coincidencia = re.search(patron, texto)
@@ -81,27 +81,9 @@ def extraer_amperaje(texto: str):
 def extraer_polos(texto: str):
     texto = normalize_text(texto)
 
-   patrones = [
-    r'\b([1-4])\s*X\s*\d+(?:\.\d+)?\s*(?:A|AMPS?\.?|AMPERES?)\b',
-    r'\b([1-4])\s*POLOS?\b',
-]
-
-    for patron in patrones:
-        coincidencia = re.search(patron, texto)
-
-        if coincidencia:
-            return int(coincidencia.group(1))
-
-    return None
-
-
-def extraer_calibre_awg(texto: str):
-    texto = normalize_text(texto)
-
     patrones = [
-        r'\bCAL(?:IBRE)?\.?\s*(\d{1,3})\b',
-        r'\b\d+\s*X\s*(\d{1,3})\s*AWG\b',
-        r'\b(\d{1,3})\s*AWG\b',
+        r'\b([1-4])\s*X\s*\d+(?:\.\d+)?\s*(?:A|AMPS?\.?|AMPERES?)\b',
+        r'\b([1-4])\s*POLOS?\b',
     ]
 
     for patron in patrones:
@@ -111,7 +93,6 @@ def extraer_calibre_awg(texto: str):
             return int(coincidencia.group(1))
 
     return None
-
 
 def extraer_diametro_mm(texto: str):
     texto = normalize_text(texto)
