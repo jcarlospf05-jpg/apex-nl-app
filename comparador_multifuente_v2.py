@@ -252,6 +252,96 @@ def detectar_familia_producto(texto: str):
 
     return None
 
+def detectar_subtipo_cable(texto: str):
+    texto = normalize_text(texto)
+
+    if "COBRE DESNUDO" in texto or "CABLE DESNUDO" in texto:
+        return "COBRE_DESNUDO"
+
+    if "USO RUDO" in texto:
+        return "USO_RUDO"
+
+    if "ARMOFLEX" in texto:
+        return "ARMOFLEX"
+
+    if "THW-LS" in texto or "THW LS" in texto:
+        return "THW_LS"
+
+    return None
+
+
+def detectar_subtipo_tuberia(texto: str):
+    texto = normalize_text(texto)
+
+    if "LICUATITE" in texto or "LIQUIDTIGHT" in texto:
+        return "LICUATITE"
+
+    if "POLIFLEX" in texto:
+        return "POLIFLEX"
+
+    if "CONDUIT" in texto:
+        return "CONDUIT"
+
+    if (
+        "PVC SANITARIO" in texto
+        or "TUBO SANITARIO" in texto
+        or "ALBANAL" in texto
+    ):
+        return "PVC_SANITARIO"
+
+    if "PVC" in texto:
+        return "PVC"
+
+    return None
+
+
+def detectar_subtipo_caja(texto: str):
+    texto = normalize_text(texto)
+
+    if "ALBANAL" in texto:
+        return "REGISTRO_ALBANAL"
+
+    if "OCTAGONAL" in texto:
+        return "CAJA_OCTAGONAL"
+
+    if "CAJA FSCA" in texto:
+        return "CAJA_FSCA"
+
+    if re.search(r"\bCAJA\s+FS\b", texto):
+        return "CAJA_FS"
+
+    if "CAJA REGISTRO" in texto:
+        return "REGISTRO_ELECTRICO"
+
+    if "CHALUPA" in texto:
+        return "CHALUPA"
+
+    if "GALVANIZ" in texto:
+        return "CAJA_GALVANIZADA"
+
+    return None
+
+
+def extraer_medida_caja(texto: str):
+    texto = normalize_text(texto)
+
+    coincidencia = re.search(
+        r"\b(\d+(?:\.\d+)?)\s*X\s*(\d+(?:\.\d+)?)"
+        r"(?:\s*X\s*(\d+(?:\.\d+)?))?\b",
+        texto,
+    )
+
+    if not coincidencia:
+        return None
+
+    medidas = [
+        valor
+        for valor in coincidencia.groups()
+        if valor is not None
+    ]
+
+    return "X".join(medidas)
+
 
 def validar_compatibilidad_tecnica(
     descripcion_entrada: str,
@@ -265,23 +355,102 @@ def validar_compatibilidad_tecnica(
         descripcion_referencia
     )
 
+    # La referencia debe pertenecer a la misma familia.
     if (
-    familia_entrada is not None
-    and familia_referencia != familia_entrada
-):
+        familia_entrada is not None
+        and familia_referencia != familia_entrada
+    ):
         return (
             False,
             f"familia diferente: "
             f"{familia_entrada} vs {familia_referencia}",
         )
 
+    # Validación específica para cables.
+    if familia_entrada == "cable":
+        subtipo_entrada = detectar_subtipo_cable(
+            descripcion_entrada
+        )
+
+        subtipo_referencia = detectar_subtipo_cable(
+            descripcion_referencia
+        )
+
+        if (
+            subtipo_entrada is not None
+            and subtipo_referencia != subtipo_entrada
+        ):
+            return (
+                False,
+                f"subtipo de cable diferente o no identificado: "
+                f"{subtipo_entrada} vs {subtipo_referencia}",
+            )
+
+    # Validación específica para tuberías.
+    if familia_entrada == "tuberia_electrica":
+        subtipo_entrada = detectar_subtipo_tuberia(
+            descripcion_entrada
+        )
+
+        subtipo_referencia = detectar_subtipo_tuberia(
+            descripcion_referencia
+        )
+
+        if (
+            subtipo_entrada is not None
+            and subtipo_referencia != subtipo_entrada
+        ):
+            return (
+                False,
+                f"subtipo de tubería diferente o no identificado: "
+                f"{subtipo_entrada} vs {subtipo_referencia}",
+            )
+
+    # Validación específica para cajas y registros.
+    if familia_entrada == "caja_electrica":
+        subtipo_entrada = detectar_subtipo_caja(
+            descripcion_entrada
+        )
+
+        subtipo_referencia = detectar_subtipo_caja(
+            descripcion_referencia
+        )
+
+        if (
+            subtipo_entrada is not None
+            and subtipo_referencia != subtipo_entrada
+        ):
+            return (
+                False,
+                f"subtipo de caja diferente o no identificado: "
+                f"{subtipo_entrada} vs {subtipo_referencia}",
+            )
+
+        medida_entrada = extraer_medida_caja(
+            descripcion_entrada
+        )
+
+        medida_referencia = extraer_medida_caja(
+            descripcion_referencia
+        )
+
+        if (
+            medida_entrada is not None
+            and medida_referencia != medida_entrada
+        ):
+            return (
+                False,
+                f"medida de caja diferente o no identificada: "
+                f"{medida_entrada} vs {medida_referencia}",
+            )
+
     validaciones = [
         (
             "amperaje",
             extraer_amperaje(descripcion_entrada),
             extraer_amperaje(descripcion_referencia),
-        ),        
-       (
+        ),
+        (
             "número de conductores",
             extraer_numero_conductores(
                 descripcion_entrada
@@ -307,11 +476,15 @@ def validar_compatibilidad_tecnica(
         ),
         (
             "diámetro en pulgadas",
-            extraer_diametro_pulgadas(descripcion_entrada),
-            extraer_diametro_pulgadas(descripcion_referencia),
+            extraer_diametro_pulgadas(
+                descripcion_entrada
+            ),
+            extraer_diametro_pulgadas(
+                descripcion_referencia
+            ),
         ),
     ]
-  
+
     for nombre, entrada, referencia in validaciones:
         if (
             entrada is not None
@@ -324,7 +497,6 @@ def validar_compatibilidad_tecnica(
             )
 
     return True, None
-
 
 
 def clasificar(precio: float, low: float, high: float) -> str:
