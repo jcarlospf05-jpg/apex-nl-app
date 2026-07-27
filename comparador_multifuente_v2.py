@@ -65,8 +65,8 @@ def extraer_amperaje(texto: str):
     texto = normalize_text(texto)
 
     patrones = [
-    r'\b\d+\s*X\s*(\d+(?:\.\d+)?)\s*(?:A|AMP\.?|AMPERES?)\b',
-    r'\b(\d+(?:\.\d+)?)\s*(?:A|AMP\.?|AMPERES?)\b',
+    r'\b\d+\s*X\s*(\d+(?:\.\d+)?)\s*(?:A|AMPS?\.?|AMPERES?)\b',
+    r'\b(\d+(?:\.\d+)?)\s*(?:A|AMPS?\.?|AMPERES?)\b',
 ]
 
     for patron in patrones:
@@ -81,8 +81,8 @@ def extraer_amperaje(texto: str):
 def extraer_polos(texto: str):
     texto = normalize_text(texto)
 
-    patrones = [
-    r'\b([1-4])\s*X\s*\d+(?:\.\d+)?\s*(?:A|AMP\.?|AMPERES?)\b',
+   patrones = [
+    r'\b([1-4])\s*X\s*\d+(?:\.\d+)?\s*(?:A|AMPS?\.?|AMPERES?)\b',
     r'\b([1-4])\s*POLOS?\b',
 ]
 
