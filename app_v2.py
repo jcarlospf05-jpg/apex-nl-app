@@ -233,25 +233,26 @@ def normalizar_texto(valor) -> str:
 
 
 def convertir_numero(valor):
-    """
-    Convierte cantidades o precios guardados como texto.
-
-    Ejemplos:
-    '$1,250.50' -> 1250.50
-    'MXN 300' -> 300
-    """
     if valor is None:
         return None
+
+    if isinstance(valor, (list, tuple, dict, set)):
+        if not valor:
+            return None
+
+        if isinstance(valor, (list, tuple)) and len(valor) == 1:
+            valor = valor[0]
+        else:
+            valor = " ".join(str(x) for x in valor)
 
     if isinstance(valor, (int, float)):
         if pd.isna(valor):
             return None
-
         return float(valor)
 
     texto = str(valor).strip()
 
-    if not texto:
+    if texto.lower() in {"", "none", "nan", "null", "[]", "-", "--"}:
         return None
 
     texto = texto.replace("$", "")
@@ -263,18 +264,16 @@ def convertir_numero(valor):
     texto = texto.replace("(", "-")
     texto = texto.replace(")", "")
 
-    texto = re.sub(
-        r"[^0-9.\-]",
-        "",
-        texto,
-    )
+    texto = re.sub(r"[^0-9.\-]", "", texto)
+
+    if texto in {"", "-", ".", "-."}:
+        return None
 
     try:
         return float(texto)
-
-    except ValueError:
+    except (ValueError, TypeError):
         return None
-
+        
 
 def normalizar_unidad(valor) -> str:
     """
@@ -588,27 +587,28 @@ def normalizar_dataframe(
     ].apply(
         convertir_numero
     )
-
-    mascara_importe = (
-        resultado["importe"].isna()
-        & resultado["cantidad"].notna()
-        & resultado[
-            "precio_unitario"
-        ].notna()
+    resultado["cantidad"] = pd.to_numeric(
+        resultado["cantidad"],
+        errors="coerce",
     )
 
-    resultado.loc[
-        mascara_importe,
-        "importe",
-    ] = (
-        resultado.loc[
-            mascara_importe,
-            "cantidad",
-        ]
-        * resultado.loc[
-            mascara_importe,
-            "precio_unitario",
-        ]
+    resultado["precio_unitario"] = pd.to_numeric(
+        resultado["precio_unitario"],
+        errors="coerce",
+    )
+
+    resultado["importe"] = pd.to_numeric(
+        resultado["importe"],
+        errors="coerce",
+    )
+
+    importe_calculado = (
+        resultado["cantidad"]
+        * resultado["precio_unitario"]
+    )
+
+    resultado["importe"] = resultado["importe"].fillna(
+        importe_calculado
     )
 
     palabras_excluir = [
