@@ -233,7 +233,10 @@ class ComparadorMultiFuente:
         Se espera columnas: proveedor, concepto, unidad, precio_unitario."""
         self.competidores = df_o_ruta if isinstance(df_o_ruta, pd.DataFrame) else pd.read_excel(df_o_ruta)
         self.competidores['concepto_norm'] = self.competidores['concepto'].map(normalize_text)
-        self.competidores['unidad_norm'] = self.competidores['unidad'].map(normalize_unit)
+        self.competidores['unidad_norm'] = self.competidores[
+            'unidad'
+        ].map(normalize_unit)
+
     def _match_pool(
         self,
         pools,
