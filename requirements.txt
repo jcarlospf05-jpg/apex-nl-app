@@ -5,3 +5,4 @@ xlrd
 pdfplumber
 gspread
 google-auth
+rapidfuzz
