@@ -60,6 +60,132 @@ def normalize_unit(u: str) -> str:
         return 'SIN_UNIDAD'
     return u.strip().upper().replace('.', '')
 
+def extraer_amperaje(texto: str):
+    texto = normalize_text(texto)
+
+    patrones = [
+        r'\b\d+\s*X\s*(\d+(?:\.\d+)?)\s*A\b',
+        r'\b(\d+(?:\.\d+)?)\s*AMPER(?:E|ES|IOS)?\b',
+        r'\b(\d+(?:\.\d+)?)\s*A\b',
+    ]
+
+    for patron in patrones:
+        coincidencia = re.search(patron, texto)
+
+        if coincidencia:
+            return float(coincidencia.group(1))
+
+    return None
+
+
+def extraer_polos(texto: str):
+    texto = normalize_text(texto)
+
+    patrones = [
+        r'\b([1-4])\s*X\s*\d+(?:\.\d+)?\s*A\b',
+        r'\b([1-4])\s*POLOS?\b',
+    ]
+
+    for patron in patrones:
+        coincidencia = re.search(patron, texto)
+
+        if coincidencia:
+            return int(coincidencia.group(1))
+
+    return None
+
+
+def extraer_calibre_awg(texto: str):
+    texto = normalize_text(texto)
+
+    patrones = [
+        r'\bCAL(?:IBRE)?\.?\s*(\d{1,3})\b',
+        r'\b\d+\s*X\s*(\d{1,3})\s*AWG\b',
+        r'\b(\d{1,3})\s*AWG\b',
+    ]
+
+    for patron in patrones:
+        coincidencia = re.search(patron, texto)
+
+        if coincidencia:
+            return int(coincidencia.group(1))
+
+    return None
+
+
+def extraer_diametro_mm(texto: str):
+    texto = normalize_text(texto)
+
+    coincidencia = re.search(
+        r'\b(\d+(?:\.\d+)?)\s*MM\b',
+        texto,
+    )
+
+    if coincidencia:
+        return float(coincidencia.group(1))
+
+    return None
+
+
+def extraer_diametro_pulgadas(texto: str):
+    texto = str(texto).upper()
+
+    coincidencia = re.search(
+        r'\b(\d+(?:\.\d+)?|\d+/\d+)\s*(?:"|PULG)',
+        texto,
+    )
+
+    if coincidencia:
+        return coincidencia.group(1)
+
+    return None
+
+
+def validar_compatibilidad_tecnica(
+    descripcion_entrada: str,
+    descripcion_referencia: str,
+):
+    validaciones = [
+        (
+            "amperaje",
+            extraer_amperaje(descripcion_entrada),
+            extraer_amperaje(descripcion_referencia),
+        ),
+        (
+            "polos",
+            extraer_polos(descripcion_entrada),
+            extraer_polos(descripcion_referencia),
+        ),
+        (
+            "calibre AWG",
+            extraer_calibre_awg(descripcion_entrada),
+            extraer_calibre_awg(descripcion_referencia),
+        ),
+        (
+            "diámetro en milímetros",
+            extraer_diametro_mm(descripcion_entrada),
+            extraer_diametro_mm(descripcion_referencia),
+        ),
+        (
+            "diámetro en pulgadas",
+            extraer_diametro_pulgadas(descripcion_entrada),
+            extraer_diametro_pulgadas(descripcion_referencia),
+        ),
+    ]
+
+    for nombre, entrada, referencia in validaciones:
+        if (
+            entrada is not None
+            and referencia is not None
+            and entrada != referencia
+        ):
+            return (
+                False,
+                f"{nombre} diferente: {entrada} vs {referencia}",
+            )
+
+    return True, None
+
 
 def clasificar(precio: float, low: float, high: float) -> str:
     if precio < low:
@@ -74,13 +200,21 @@ class ComparadorMultiFuente:
         self.nl = pd.read_excel(excel_path, sheet_name='Tabulador Homologado NL')
         # concepto_homologado ya viene normalizado (mayusculas, sin acentos) desde el homologador
         self.nl['concepto_norm'] = self.nl['concepto_homologado'].map(normalize_text)
+        self.nl['unidad_norm'] = self.nl['unidad'].map(normalize_unit)
 
         self.cdmx = pd.read_excel(excel_path, sheet_name='Tabulador CDMX (gobierno)')
         self.cdmx['unidad_norm'] = self.cdmx['unidad'].map(normalize_unit)
         self.cdmx['concepto_norm'] = self.cdmx['concepto'].map(normalize_text)
 
-        self._nl_pools = {u: df for u, df in self.nl.groupby('unidad')}
-        self._cdmx_pools = {u: df for u, df in self.cdmx.groupby('unidad_norm')}
+        self._nl_pools = {
+            u: df
+            for u, df in self.nl.groupby('unidad_norm')
+        }
+
+        self._cdmx_pools = {
+            u: df
+            for u, df in self.cdmx.groupby('unidad_norm')
+        }
 
         # Fuentes pendientes de datos reales del usuario:
         self.ragasa = None
@@ -100,21 +234,57 @@ class ComparadorMultiFuente:
         self.competidores = df_o_ruta if isinstance(df_o_ruta, pd.DataFrame) else pd.read_excel(df_o_ruta)
         self.competidores['concepto_norm'] = self.competidores['concepto'].map(normalize_text)
         self.competidores['unidad_norm'] = self.competidores['unidad'].map(normalize_unit)
-
-    def _match_pool(self, pools, t, u, min_score, scorer, text_col='concepto_norm'):
+    def _match_pool(
+        self,
+        pools,
+        t,
+        u,
+        min_score,
+        scorer,
+        text_col='concepto_norm',
+    ):
         pool = pools.get(u)
+
         if pool is None or pool.empty:
             return None
-        choices = pool[text_col].tolist()
-        result = process.extractOne(t, choices, scorer=scorer, score_cutoff=min_score)
-        if result is None:
+
+        choices = pool[
+            text_col
+        ].fillna("").tolist()
+
+        candidatos = process.extract(
+            t,
+            choices,
+            scorer=scorer,
+            score_cutoff=min_score,
+            limit=25,
+        )
+
+        if not candidatos:
             return None
-        _, score, idx = result
-        row = pool.iloc[idx]
-        return float(score), row
+
+        for _, score, indice in candidatos:
+            row = pool.iloc[indice]
+
+            descripcion_referencia = row.get(
+                text_col,
+                "",
+            )
+
+            compatible, _ = validar_compatibilidad_tecnica(
+                t,
+                descripcion_referencia,
+            )
+
+            if not compatible:
+                continue
+
+            return float(score), row
+
+        return None
 
     def evaluar(self, descripcion: str, unidad: str, precio_cotizado: float,
-                min_score: float = 70.0, scorer=fuzz.token_set_ratio,
+                min_score: float = 78.0, scorer=fuzz.token_set_ratio,
                 ajustar_inflacion: bool = True) -> dict:
         t = normalize_text(descripcion)
         u = normalize_unit(unidad)
