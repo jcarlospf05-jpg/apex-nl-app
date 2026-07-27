@@ -837,12 +837,14 @@ def leer_csv(archivo):
 
 def leer_pdf(archivo):
     """
-    Primera versión para PDF digital.
+    Lee PDF digitales con tablas.
+
+    Reconoce formatos como:
+    PDA | DESCRIPCION | UNIDAD | CDAD |
+    PRECIO MATERIAL | PRECIO M.O |
+    PRECIO UNITARIO | IMPORTE
 
     No utiliza OCR.
-
-    Cuando el PDF es escaneado o contiene imágenes,
-    puede no detectar las tablas.
     """
     try:
         import pdfplumber
@@ -855,7 +857,8 @@ def leer_pdf(archivo):
 
     contenido = archivo.getvalue()
 
-    candidatos = []
+    filas_validas = []
+    paginas_detectadas = set()
 
     with pdfplumber.open(
         io.BytesIO(contenido)
@@ -865,70 +868,150 @@ def leer_pdf(archivo):
             pdf.pages,
             start=1,
         ):
-
             tablas = pagina.extract_tables() or []
 
-            for numero_tabla, tabla in enumerate(
-                tablas,
-                start=1,
-            ):
+            for tabla in tablas:
 
                 if not tabla:
                     continue
 
-                df_crudo = pd.DataFrame(
-                    tabla
-                )
+                for fila in tabla:
 
-                origen = (
-                    f"Página {numero_pagina}, "
-                    f"tabla {numero_tabla}"
-                )
+                    if not fila or len(fila) < 8:
+                        continue
 
-                normalizado = normalizar_dataframe(
-                    df_crudo,
-                    nombre_origen=origen,
-                )
+                    valores = list(fila[:8])
 
-                if not normalizado.empty:
+                    partida = valores[0]
+                    concepto = valores[1]
+                    unidad = valores[2]
+                    cantidad = valores[3]
+                    precio_unitario = valores[6]
+                    importe = valores[7]
 
-                    candidatos.append(
+                    partida_texto = (
+                        str(partida).strip()
+                        if partida is not None
+                        else ""
+                    )
+
+                    concepto_texto = (
+                        str(concepto).strip()
+                        if concepto is not None
+                        else ""
+                    )
+
+                    unidad_texto = (
+                        str(unidad).strip()
+                        if unidad is not None
+                        else ""
+                    )
+
+                    # Eliminar saltos de línea dentro de la descripción.
+                    concepto_texto = re.sub(
+                        r"\s+",
+                        " ",
+                        concepto_texto,
+                    ).strip()
+
+                    # Saltar encabezados.
+                    if normalizar_texto(partida_texto) in {
+                        "pda",
+                        "partida",
+                        "item",
+                    }:
+                        continue
+
+                    if normalizar_texto(concepto_texto) in {
+                        "descripcion",
+                        "descripción",
+                    }:
+                        continue
+
+                    # Solo aceptar renglones con número de partida.
+                    coincidencia_partida = re.search(
+                        r"\d+(?:\.\d+)?",
+                        partida_texto,
+                    )
+
+                    if not coincidencia_partida:
+                        continue
+
+                    partida_limpia = coincidencia_partida.group()
+
+                    cantidad_numero = convertir_numero(
+                        cantidad
+                    )
+
+                    precio_numero = convertir_numero(
+                        precio_unitario
+                    )
+
+                    importe_numero = convertir_numero(
+                        importe
+                    )
+
+                    if not concepto_texto:
+                        continue
+
+                    if precio_numero is None or precio_numero <= 0:
+                        continue
+
+                    filas_validas.append(
                         {
-                            "pagina": numero_pagina,
-                            "tabla": numero_tabla,
-                            "datos": normalizado,
-                            "partidas": len(
-                                normalizado
+                            "partida": partida_limpia,
+                            "concepto": concepto_texto,
+                            "unidad": normalizar_unidad(
+                                unidad_texto
                             ),
-                            "puntaje": normalizado[
-                                "puntaje_deteccion"
-                            ].max(),
+                            "cantidad": cantidad_numero,
+                            "precio_unitario": precio_numero,
+                            "importe": importe_numero,
+                            "origen": (
+                                f"Página {numero_pagina}"
+                            ),
+                            "fila_encabezado": None,
+                            "puntaje_deteccion": 9,
                         }
                     )
 
-    if not candidatos:
+                    paginas_detectadas.add(
+                        numero_pagina
+                    )
+
+    if not filas_validas:
         raise ValueError(
-            "No se detectó una tabla de precios en el PDF. "
-            "El documento puede estar escaneado, tener un "
-            "diseño complejo o no contener precios unitarios."
+            "No se detectaron partidas válidas en el PDF. "
+            "El documento puede estar escaneado o tener "
+            "una estructura diferente."
         )
 
-    candidatos.sort(
-        key=lambda item: (
-            item["pagina"],
-            item["tabla"],
-        )
+    resultado = pd.DataFrame(
+        filas_validas
     )
 
-    tablas_validas = [
-        item["datos"]
-        for item in candidatos
-        if item["puntaje"] >= 6
-    ]
+    resultado["cantidad"] = pd.to_numeric(
+        resultado["cantidad"],
+        errors="coerce",
+    )
 
-    resultado = pd.concat(
-        tablas_validas,
-        ignore_index=True,
+    resultado["precio_unitario"] = pd.to_numeric(
+        resultado["precio_unitario"],
+        errors="coerce",
+    )
+
+    resultado["importe"] = pd.to_numeric(
+        resultado["importe"],
+        errors="coerce",
+    )
+
+    importe_calculado = (
+        resultado["cantidad"]
+        * resultado["precio_unitario"]
+    )
+
+    resultado["importe"] = resultado["importe"].fillna(
+        importe_calculado
     )
 
     resultado = resultado.drop_duplicates(
@@ -941,34 +1024,25 @@ def leer_pdf(archivo):
         keep="first",
     )
 
-    paginas = sorted(
-        set(
-            item["pagina"]
-            for item in candidatos
-        )
+    resultado = resultado.sort_values(
+        by="partida",
+        key=lambda serie: pd.to_numeric(
+            serie,
+            errors="coerce",
+        ),
     )
 
-    confianza = min(
-        95,
-        int(
-            max(
-                item["puntaje"]
-                for item in candidatos
-            )
-            / 9
-            * 100
-        ),
+    resultado = resultado.reset_index(
+        drop=True
     )
 
     metadatos = {
         "tipo": "PDF digital",
         "hoja_detectada": (
-            f"{len(paginas)} páginas con tablas"
+            f"{len(paginas_detectadas)} páginas con partidas"
         ),
-        "partidas": len(
-            resultado
-        ),
-        "confianza": confianza,
+        "partidas": len(resultado),
+        "confianza": 95,
     }
 
     return resultado, metadatos
