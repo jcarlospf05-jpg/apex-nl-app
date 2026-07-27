@@ -354,6 +354,46 @@ def validar_compatibilidad_tecnica(
     familia_referencia = detectar_familia_producto(
         descripcion_referencia
     )
+      texto_entrada = normalize_text(descripcion_entrada)
+    texto_referencia = normalize_text(descripcion_referencia)
+
+    entrada_es_registro_electrico = (
+        "REGISTRO" in texto_entrada
+        and (
+            "ELECTRIC" in texto_entrada
+            or "CAJA" in texto_entrada
+        )
+    )
+
+    referencia_es_albanal = (
+        "REGISTRO" in texto_referencia
+        and "ALBANAL" in texto_referencia
+    )
+
+    entrada_es_albanal = (
+        "REGISTRO" in texto_entrada
+        and "ALBANAL" in texto_entrada
+    )
+
+    referencia_es_registro_electrico = (
+        "REGISTRO" in texto_referencia
+        and (
+            "ELECTRIC" in texto_referencia
+            or "CAJA" in texto_referencia
+        )
+    )
+
+    if (
+        entrada_es_registro_electrico
+        and referencia_es_albanal
+    ) or (
+        entrada_es_albanal
+        and referencia_es_registro_electrico
+    ):
+        return (
+            False,
+            "registro eléctrico incompatible con registro de albañal",
+        )
 
     # La referencia debe pertenecer a la misma familia.
     if (
