@@ -111,7 +111,36 @@ def extraer_calibre_awg(texto: str):
             return int(coincidencia.group(1))
 
     return None
+def extraer_numero_conductores(texto: str):
+    """
+    Extrae la cantidad de conductores en expresiones como:
+    3X14 AWG, 4 X 12 AWG.
+    """
+    texto = normalize_text(texto)
 
+    coincidencia = re.search(
+        r'\b(\d+)\s*X\s*\d{1,3}\s*AWG\b',
+        texto,
+    )
+
+    if coincidencia:
+        return int(coincidencia.group(1))
+
+    return None
+
+
+def extraer_diametro_mm(texto: str):
+    texto = normalize_text(texto)
+
+    coincidencia = re.search(
+        r'\b(\d+(?:\.\d+)?)\s*MM\b',
+        texto,
+    )
+
+    if coincidencia:
+        return float(coincidencia.group(1))
+
+    return None
 
 def extraer_diametro_mm(texto: str):
     texto = normalize_text(texto)
@@ -251,6 +280,15 @@ def validar_compatibilidad_tecnica(
             "amperaje",
             extraer_amperaje(descripcion_entrada),
             extraer_amperaje(descripcion_referencia),
+        ),        
+       (
+            "número de conductores",
+            extraer_numero_conductores(
+                descripcion_entrada
+            ),
+            extraer_numero_conductores(
+                descripcion_referencia
+            ),
         ),
         (
             "polos",
