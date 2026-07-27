@@ -313,14 +313,14 @@ def validar_compatibilidad_tecnica(
     ]
 
     for nombre, entrada, referencia in validaciones:
-        if (
-            entrada is not None
-            and referencia is not None
-            and entrada != referencia
-        ):
+    if (
+        entrada is not None
+        and referencia != entrada
+    ):
             return (
                 False,
-                f"{nombre} diferente: {entrada} vs {referencia}",
+                f"{nombre} diferente o no identificado: "
+                f"{entrada} vs {referencia}",
             )
 
     return True, None
