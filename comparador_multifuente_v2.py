@@ -95,7 +95,7 @@ def extraer_polos(texto: str):
     return None
 
 
-  def extraer_calibre_awg(texto: str):
+def extraer_calibre_awg(texto: str):
     texto = normalize_text(texto)
 
     patrones = [
