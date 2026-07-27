@@ -237,10 +237,9 @@ def validar_compatibilidad_tecnica(
     )
 
     if (
-        familia_entrada is not None
-        and familia_referencia is not None
-        and familia_entrada != familia_referencia
-    ):
+    familia_entrada is not None
+    and familia_referencia != familia_entrada
+):
         return (
             False,
             f"familia diferente: "
