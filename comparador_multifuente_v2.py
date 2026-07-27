@@ -312,11 +312,11 @@ def validar_compatibilidad_tecnica(
         ),
     ]
 
-    for nombre, entrada, referencia in validaciones:
-    if (
-        entrada is not None
-        and referencia != entrada
-    ):
+      for nombre, entrada, referencia in validaciones:
+        if (
+            entrada is not None
+            and referencia != entrada
+        ):
             return (
                 False,
                 f"{nombre} diferente o no identificado: "
@@ -324,6 +324,8 @@ def validar_compatibilidad_tecnica(
             )
 
     return True, None
+
+
 
 
 def clasificar(precio: float, low: float, high: float) -> str:
