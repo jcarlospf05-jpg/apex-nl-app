@@ -94,6 +94,25 @@ def extraer_polos(texto: str):
 
     return None
 
+
+  def extraer_calibre_awg(texto: str):
+    texto = normalize_text(texto)
+
+    patrones = [
+        r'\bCAL(?:IBRE)?\.?\s*(\d{1,3})\b',
+        r'\b\d+\s*X\s*(\d{1,3})\s*AWG\b',
+        r'\b(\d{1,3})\s*AWG\b',
+    ]
+
+    for patron in patrones:
+        coincidencia = re.search(patron, texto)
+
+        if coincidencia:
+            return int(coincidencia.group(1))
+
+    return None
+
+
 def extraer_diametro_mm(texto: str):
     texto = normalize_text(texto)
 
