@@ -140,11 +140,113 @@ def extraer_diametro_pulgadas(texto: str):
 
     return None
 
+def detectar_familia_producto(texto: str):
+    texto = normalize_text(texto)
+
+    familias = {
+        "interruptor": [
+            "INTERRUPTOR",
+            "TERMOMAGNETICO",
+            "DISYUNTOR",
+            "BREAKER",
+        ],
+        "contacto": [
+            "CONTACTO",
+            "TOMACORRIENTE",
+            "RECEPTACULO",
+        ],
+        "apagador": [
+            "APAGADOR",
+            "INTERRUPTOR DE LUZ",
+        ],
+        "caja_electrica": [
+            "CAJA",
+            "CHALUPA",
+            "REGISTRO",
+        ],
+        "conector": [
+            "CONECTOR",
+            "GLANDULA",
+        ],
+        "cable": [
+            "CABLE",
+            "CONDUCTOR",
+            "ALAMBRE",
+            "ARMOFLEX",
+        ],
+        "tuberia_electrica": [
+            "TUBO",
+            "CONDUIT",
+            "POLIFLEX",
+            "LICUATITE",
+        ],
+        "condulet": [
+            "CONDULET",
+        ],
+        "lampara": [
+            "LAMPARA",
+            "LUMINARIA",
+            "REFLECTOR",
+        ],
+        "sensor": [
+            "SENSOR",
+        ],
+        "relevador": [
+            "RELEVADOR",
+            "RELE",
+        ],
+        "ventilador": [
+            "VENTILADOR",
+            "EXTRACTOR",
+        ],
+        "canaleta": [
+            "CANALETA",
+        ],
+        "poste": [
+            "POSTE",
+        ],
+        "soporte": [
+            "SOPORTE",
+            "BASE METALICA",
+            "PTR",
+        ],
+        "limpieza": [
+            "LIMPIEZA",
+            "ASEO",
+        ],
+    }
+
+    for familia, palabras in familias.items():
+        for palabra in palabras:
+            if palabra in texto:
+                return familia
+
+    return None
+
 
 def validar_compatibilidad_tecnica(
     descripcion_entrada: str,
     descripcion_referencia: str,
 ):
+    familia_entrada = detectar_familia_producto(
+        descripcion_entrada
+    )
+
+    familia_referencia = detectar_familia_producto(
+        descripcion_referencia
+    )
+
+    if (
+        familia_entrada is not None
+        and familia_referencia is not None
+        and familia_entrada != familia_referencia
+    ):
+        return (
+            False,
+            f"familia diferente: "
+            f"{familia_entrada} vs {familia_referencia}",
+        )
+
     validaciones = [
         (
             "amperaje",
