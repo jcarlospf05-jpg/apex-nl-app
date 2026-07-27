@@ -59,15 +59,15 @@ def normalize_unit(u: str) -> str:
     if not isinstance(u, str) or not u.strip():
         return 'SIN_UNIDAD'
     return u.strip().upper().replace('.', '')
+  
 
 def extraer_amperaje(texto: str):
     texto = normalize_text(texto)
 
     patrones = [
-        r'\b\d+\s*X\s*(\d+(?:\.\d+)?)\s*A\b',
-        r'\b(\d+(?:\.\d+)?)\s*AMPER(?:E|ES|IOS)?\b',
-        r'\b(\d+(?:\.\d+)?)\s*A\b',
-    ]
+    r'\b\d+\s*X\s*(\d+(?:\.\d+)?)\s*(?:A|AMP\.?|AMPERES?)\b',
+    r'\b(\d+(?:\.\d+)?)\s*(?:A|AMP\.?|AMPERES?)\b',
+]
 
     for patron in patrones:
         coincidencia = re.search(patron, texto)
@@ -82,9 +82,9 @@ def extraer_polos(texto: str):
     texto = normalize_text(texto)
 
     patrones = [
-        r'\b([1-4])\s*X\s*\d+(?:\.\d+)?\s*A\b',
-        r'\b([1-4])\s*POLOS?\b',
-    ]
+    r'\b([1-4])\s*X\s*\d+(?:\.\d+)?\s*(?:A|AMP\.?|AMPERES?)\b',
+    r'\b([1-4])\s*POLOS?\b',
+]
 
     for patron in patrones:
         coincidencia = re.search(patron, texto)
