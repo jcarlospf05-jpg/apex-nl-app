@@ -1,6 +1,7 @@
 streamlit
 pandas
 openpyxl
-rapidfuzz
+xlrd
+pdfplumber
 gspread
 google-auth
