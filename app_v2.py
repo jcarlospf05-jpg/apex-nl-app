@@ -979,6 +979,68 @@ def leer_pdf(archivo):
                         numero_pagina
                     )
 
+        if not filas_validas:
+        # Segundo intento:
+        # cotizaciones con una sola partida global,
+        # sin columna PDA o número de partida.
+        with pdfplumber.open(
+            io.BytesIO(contenido)
+        ) as pdf:
+            texto_completo = "\n".join(
+                pagina.extract_text() or ""
+                for pagina in pdf.pages
+            )
+
+        patron_servicio_global = re.search(
+            r"Descripción\s+Cantidad\s+Precio\s+unitario"
+            r"\s+Impuestos\s+Importe\s+"
+            r"(.+?)\s+"
+            r"(\d+(?:\.\d+)?)\s+"
+            r"([A-Za-zÁÉÍÓÚáéíóúÑñ]+)\s+"
+            r"\$?\s*([\d,]+\.\d{2})\s+"
+            r"IVA\s*\(\s*16%\s*\)\s+"
+            r"\$?\s*([\d,]+\.\d{2})",
+            texto_completo,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        if patron_servicio_global:
+            descripcion = re.sub(
+                r"\s+",
+                " ",
+                patron_servicio_global.group(1),
+            ).strip()
+
+            cantidad = float(
+                patron_servicio_global.group(2)
+            )
+
+            unidad = patron_servicio_global.group(3)
+
+            precio_unitario = float(
+                patron_servicio_global.group(4).replace(",", "")
+            )
+
+            importe = float(
+                patron_servicio_global.group(5).replace(",", "")
+            )
+
+            filas_validas.append(
+                {
+                    "pda": 1,
+                    "descripcion": descripcion,
+                    "unidad": unidad,
+                    "cantidad": cantidad,
+                    "precio_material": 0.0,
+                    "precio_mo": 0.0,
+                    "precio_unitario": precio_unitario,
+                    "importe": importe,
+                    "pagina": 1,
+                }
+            )
+
+            paginas_detectadas.add(1)
+
     if not filas_validas:
         raise ValueError(
             "No se detectaron partidas válidas en el PDF. "
