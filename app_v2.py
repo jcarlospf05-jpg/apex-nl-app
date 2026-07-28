@@ -1025,19 +1025,19 @@ def leer_pdf(archivo):
                 patron_servicio_global.group(5).replace(",", "")
             )
 
-            filas_validas.append(
-                {
-                    "pda": 1,
-                    "descripcion": descripcion,
-                    "unidad": unidad,
-                    "cantidad": cantidad,
-                    "precio_material": 0.0,
-                    "precio_mo": 0.0,
-                    "precio_unitario": precio_unitario,
-                    "importe": importe,
-                    "pagina": 1,
-                }
-            )
+filas_validas.append(
+    {
+        "partida": 1,
+        "concepto": descripcion,
+        "unidad": unidad,
+        "cantidad": cantidad,
+        "precio_material": 0.0,
+        "precio_mo": 0.0,
+        "precio_unitario": precio_unitario,
+        "importe": importe,
+        "pagina": 1,
+    }
+)
 
             paginas_detectadas.add(1)
 
