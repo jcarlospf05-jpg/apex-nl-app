@@ -979,7 +979,7 @@ def leer_pdf(archivo):
                         numero_pagina
                     )
 
-       if not filas_validas:
+    if not filas_validas:
         # Segundo intento:
         # cotizaciones con una sola partida global,
         # sin columna PDA o número de partida.
