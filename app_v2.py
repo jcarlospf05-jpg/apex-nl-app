@@ -877,17 +877,32 @@ def leer_pdf(archivo):
 
                 for fila in tabla:
 
-                    if not fila or len(fila) < 8:
+                    if not fila or len(fila) < 6:
                         continue
 
-                    valores = list(fila[:8])
+                    valores = list(fila)
 
-                    partida = valores[0]
-                    concepto = valores[1]
-                    unidad = valores[2]
-                    cantidad = valores[3]
-                    precio_unitario = valores[6]
-                    importe = valores[7]
+                    # Formato de 8 columnas:
+                    # PDA | DESCRIPCIÓN | UNIDAD | CANTIDAD |
+                    # MATERIAL | M.O. | P.U. | IMPORTE
+                    if len(valores) >= 8:
+                        partida = valores[0]
+                        concepto = valores[1]
+                        unidad = valores[2]
+                        cantidad = valores[3]
+                        precio_unitario = valores[6]
+                        importe = valores[7]
+
+                    # Formato de 6 columnas:
+                    # CLAVE | DESCRIPCIÓN | UNIDAD |
+                    # CANTIDAD | P.U. | IMPORTE
+                    else:
+                        partida = valores[0]
+                        concepto = valores[1]
+                        unidad = valores[2]
+                        cantidad = valores[3]
+                        precio_unitario = valores[4]
+                        importe = valores[5]
 
                     partida_texto = (
                         str(partida).strip()
@@ -934,11 +949,12 @@ def leer_pdf(archivo):
                         partida_texto,
                     )
 
-                    if not coincidencia_partida:
-                        continue
-
-                    partida_limpia = coincidencia_partida.group()
-
+                    if coincidencia_partida:
+                        partida_limpia = coincidencia_partida.group()
+                    else:
+                        partida_limpia = str(
+                            len(filas_validas) + 1
+                        )
                     cantidad_numero = convertir_numero(
                         cantidad
                     )
