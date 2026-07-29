@@ -1018,7 +1018,7 @@ def leer_pdf(archivo):
         texto_para_detectar_formato
     )
 
-        claves_obra_detectadas = re.findall(
+    claves_obra_detectadas = re.findall(
         r"\b\d+\.\d+\b",
         texto_para_detectar_formato,
     )
