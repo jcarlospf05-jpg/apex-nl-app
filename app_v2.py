@@ -40,6 +40,7 @@ import pandas as pd
 import streamlit as st
 
 from comparador_multifuente_v2 import ComparadorMultiFuente
+import ajuste_inflacion
 
 
 # ==========================================================
@@ -110,6 +111,15 @@ def cargar_historico():
 
 comparador = cargar_comparador()
 historico = cargar_historico()
+
+# Intenta traer el dato mas reciente del INPC directo de la API de INEGI.
+# Si no hay token configurado (Secrets: inegi_api_token) o falla la
+# conexion, no truena nada: se queda con el valor de respaldo de
+# ajuste_inflacion.py.
+try:
+    inpc_en_vivo = ajuste_inflacion.refrescar_nivel_actual()
+except Exception:
+    inpc_en_vivo = False
 
 
 # ==========================================================
@@ -273,7 +283,7 @@ def convertir_numero(valor):
         return float(texto)
     except (ValueError, TypeError):
         return None
-        
+
 
 def normalizar_unidad(valor) -> str:
     """
@@ -1005,7 +1015,7 @@ def leer_pdf(archivo):
     # Detectar cotizaciones de obra con partidas decimales.
     # En este formato, la extracción automática de tablas
     # puede mezclar las descripciones de las partidas
-   
+
     with pdfplumber.open(
         io.BytesIO(contenido)
     ) as pdf:
@@ -1034,9 +1044,9 @@ def leer_pdf(archivo):
     if es_cotizacion_obra:
         filas_validas = []
         paginas_detectadas = set()
-   
 
-  
+
+
     # ======================================================
     # SEGUNDO INTENTO: UNA SOLA PARTIDA GLOBAL
     # ======================================================
@@ -1252,7 +1262,7 @@ def leer_pdf(archivo):
         ):
             continue
 
-       
+
 
         descripcion_acumulada.append(
             linea
@@ -1341,7 +1351,7 @@ def leer_pdf(archivo):
 # IDENTIFICACIÓN DE FORMATO
 # ==========================================================
 
-  
+
 def cargar_y_normalizar_archivo(archivo):
     extension = Path(
         archivo.name
@@ -1426,6 +1436,24 @@ with st.sidebar:
             f"{resumen['total_renglones']} renglones · "
             f"{len(resumen['proveedores'])} proveedores · "
             f"{len(resumen['proyectos'])} proyectos"
+        )
+
+    if inpc_en_vivo:
+
+        st.caption(
+            f"INPC: dato en vivo de INEGI "
+            f"({ajuste_inflacion.ETIQUETA_ACTUAL}, "
+            f"nivel {ajuste_inflacion.NIVEL_ACTUAL})."
+        )
+
+    else:
+
+        st.caption(
+            f"INPC: usando valor de respaldo "
+            f"({ajuste_inflacion.ETIQUETA_ACTUAL}, "
+            f"nivel {ajuste_inflacion.NIVEL_ACTUAL}). "
+            "Configura 'inegi_api_token' en Secrets "
+            "para traerlo automático."
         )
 
 
