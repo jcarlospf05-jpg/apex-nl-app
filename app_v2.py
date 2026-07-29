@@ -9,10 +9,10 @@ La aplicación acepta:
 - Excel .xlsm
 - CSV
 - PDF digital con tablas
-
-La aplicación intenta detectar automáticamente:
+e:
 
 - La hoja correcta
+La aplicación intenta detectar automáticament
 - La fila donde empiezan los encabezados
 - La columna de concepto
 - La columna de unidad
@@ -1168,6 +1168,7 @@ def leer_pdf(archivo):
 
         descripcion_acumulada = []
         clave_pendiente = None
+        capturando_partida = False
 
         for numero_pagina, linea in lineas_pdf:
 
@@ -1175,43 +1176,49 @@ def leer_pdf(archivo):
                 linea
             )
 
-            # Claves como 1.1, 1.2 y 1.3.
-            # También funciona cuando la descripción
-            # comienza en la misma línea que la clave.
-            coincidencia_clave = patron_clave.match(
-                linea
+            # Iniciar partidas con clave: 1.1, 1.2, 1.3, etc.
+            coincidencia_clave = re.fullmatch(
+                r"(\d+(?:\.\d+)+)",
+                linea,
             )
 
             if coincidencia_clave:
                 clave_pendiente = coincidencia_clave.group(1)
                 descripcion_acumulada = []
-
-                texto_despues_clave = (
-                    coincidencia_clave.group(2).strip()
-                )
-
-                if texto_despues_clave:
-                    descripcion_acumulada.append(
-                        texto_despues_clave
-                    )
-
+                capturando_partida = True
                 continue
 
-            # Los encabezados de sección indican
-            # que comienza una nueva partida.
-            if any(
-                linea_normalizada.startswith(encabezado)
-                for encabezado in encabezados_seccion
+            # Iniciar partidas sin clave visible:
+            # BANQUETA y LIMPIEZA FINA.
+            if re.match(
+                r"^BANQUETA(?:\s+\$[\d,]+\.\d{2})?$",
+                linea,
+                flags=re.IGNORECASE,
             ):
+                clave_pendiente = str(
+                    len(filas_validas) + 1
+                )
                 descripcion_acumulada = []
-                clave_pendiente = None
+                capturando_partida = True
+                continue
+
+            if re.match(
+                r"^LIMPIEZA FINA(?:\s+\$[\d,]+\.\d{2})?$",
+                linea,
+                flags=re.IGNORECASE,
+            ):
+                clave_pendiente = str(
+                    len(filas_validas) + 1
+                )
+                descripcion_acumulada = []
+                capturando_partida = True
                 continue
 
             coincidencia = patron_datos_partida.match(
                 linea
             )
 
-            if coincidencia:
+            if coincidencia and capturando_partida:
 
                 descripcion_en_linea = (
                     coincidencia.group(1).strip()
@@ -1281,28 +1288,23 @@ def leer_pdf(archivo):
 
                 descripcion_acumulada = []
                 clave_pendiente = None
+                capturando_partida = False
                 continue
 
-            # No acumular información general ni totales.
+            # Solo acumular texto cuando ya comenzó una partida.
+            if not capturando_partida:
+                continue
+
+            # Evitar encabezados y datos generales.
             if any(
                 texto in linea_normalizada
                 for texto in textos_ignorar
             ):
                 continue
 
-            # No acumular títulos con un monto de sección.
-            if re.fullmatch(
-                r"[A-ZÁÉÍÓÚÑ\s]+\s+\$[\d,]+\.\d{2}",
-                linea,
-                flags=re.IGNORECASE,
-            ):
-                descripcion_acumulada = []
-                continue
-
             descripcion_acumulada.append(
                 linea
             )
-
     # ======================================================
     # VALIDACIÓN Y LIMPIEZA FINAL
     # ======================================================
