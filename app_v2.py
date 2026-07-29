@@ -1058,7 +1058,7 @@ def leer_pdf(archivo):
             )
 
             paginas_detectadas.add(1)
-if not filas_validas:
+    if not filas_validas:
         # Tercer intento:
         # cotizaciones de obra con estructura:
         # clave + descripción + unidad + cantidad + P.U. + importe
