@@ -1175,10 +1175,12 @@ def leer_pdf(archivo):
             linea_normalizada = normalizar_texto(
                 linea
             )
-
-            # Iniciar partidas con clave: 1.1, 1.2, 1.3, etc.
-            coincidencia_clave = re.fullmatch(
-                r"(\d+(?:\.\d+)+)",
+            # Detectar claves como:
+            # 1.1
+            # 1.2 EXCAVACIÓN...
+            # 1.3 RELLENO...
+            coincidencia_clave = re.match(
+                r"^(\d+(?:\.\d+)+)\b\s*(.*)$",
                 linea,
             )
 
@@ -1186,6 +1188,16 @@ def leer_pdf(archivo):
                 clave_pendiente = coincidencia_clave.group(1)
                 descripcion_acumulada = []
                 capturando_partida = True
+
+                texto_despues_clave = (
+                    coincidencia_clave.group(2).strip()
+                )
+
+                if texto_despues_clave:
+                    descripcion_acumulada.append(
+                        texto_despues_clave
+                    )
+
                 continue
 
             # Iniciar partidas sin clave visible:
