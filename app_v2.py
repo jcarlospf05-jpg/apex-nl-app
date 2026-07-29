@@ -1017,10 +1017,13 @@ def leer_pdf(archivo):
         texto_para_detectar_formato
     )
 
-    es_cotizacion_obra = (
-        "saro construcciones" in encabezado_normalizado
+        es_cotizacion_obra = (
+        "clave" in encabezado_normalizado
+        and "descripcion" in encabezado_normalizado
+        and "unidad" in encabezado_normalizado
+        and "cantidad" in encabezado_normalizado
         and "precio unitario" in encabezado_normalizado
-        and "banquetas" in encabezado_normalizado
+        and "importe" in encabezado_normalizado
     )
 
     if es_cotizacion_obra:
