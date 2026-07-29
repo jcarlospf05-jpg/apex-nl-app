@@ -1004,8 +1004,8 @@ def leer_pdf(archivo):
                     )
     # Detectar cotizaciones de obra con partidas decimales.
     # En este formato, la extracción automática de tablas
-    # puede mezclar las descripciones de las partidas.
-    with pdfplumber.open(
+    # puede mezclar las descripciones de las partidas
+        with pdfplumber.open(
         io.BytesIO(contenido)
     ) as pdf:
         texto_para_detectar_formato = "\n".join(
@@ -1013,7 +1013,7 @@ def leer_pdf(archivo):
             for pagina in pdf.pages
         )
 
-       encabezado_normalizado = normalizar_texto(
+    encabezado_normalizado = normalizar_texto(
         texto_para_detectar_formato
     )
 
@@ -1032,6 +1032,7 @@ def leer_pdf(archivo):
     if es_cotizacion_obra:
         filas_validas = []
         paginas_detectadas = set()
+   
 
   
     # ======================================================
