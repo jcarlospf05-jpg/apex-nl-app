@@ -1017,7 +1017,7 @@ def leer_pdf(archivo):
         texto_para_detectar_formato
     )
 
-        es_cotizacion_obra = all(
+    es_cotizacion_obra = all(
         texto in encabezado_normalizado
         for texto in [
             "clave",
@@ -1032,6 +1032,8 @@ def leer_pdf(archivo):
     if es_cotizacion_obra:
         filas_validas = []
         paginas_detectadas = set()
+
+  
     # ======================================================
     # SEGUNDO INTENTO: UNA SOLA PARTIDA GLOBAL
     # ======================================================
