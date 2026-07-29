@@ -1109,13 +1109,12 @@ def leer_pdf(archivo):
     # ======================================================
 
     filas_tabla = list(filas_validas)
-    filas_validas = []
+    filas_obra = []
     lineas_pdf = []
 
     with pdfplumber.open(
         io.BytesIO(contenido)
     ) as pdf:
-
         for numero_pagina, pagina in enumerate(
             pdf.pages,
             start=1,
@@ -1123,7 +1122,6 @@ def leer_pdf(archivo):
             texto_pagina = pagina.extract_text() or ""
 
             for linea in texto_pagina.splitlines():
-
                 linea = re.sub(
                     r"\s+",
                     " ",
@@ -1135,14 +1133,17 @@ def leer_pdf(archivo):
                         (numero_pagina, linea)
                     )
 
-    patron_datos_partida = re.compile(
-        r"^(.*?)"
+    patron_renglon_precio = re.compile(
+        r"^(?:(\d+(?:\.\d+)?)\s+)?"
+        r"(.*?)"
         r"\b(M2|M3|ML|M|PZA|PZAS|SERVICIO|LOTE|KG|TON)\b"
         r"\s+([\d,]+(?:\.\d+)?)"
         r"\s+\$?\s*([\d,]+\.\d{2})"
         r"\s+\$?\s*([\d,]+\.\d{2})$",
         flags=re.IGNORECASE,
     )
+
+    descripcion_acumulada = []
 
     textos_ignorar = [
         "clave descripcion unidad cantidad",
@@ -1157,112 +1158,62 @@ def leer_pdf(archivo):
         "iva",
         "total",
         "notas y condiciones",
-        "tiempo de ejecucion",
-        "condiciones de pago",
-        "duracion de propuesta",
-        "garantia",
-        "alcance",
-        "correo",
-        "telefono",
-        "celular",
     ]
 
-    descripcion_acumulada = []
-    clave_pendiente = None
-    capturando_partida = False
-
     for numero_pagina, linea in lineas_pdf:
-
         linea_normalizada = normalizar_texto(
             linea
         )
 
-        # Detectar claves como 1.1, 1.2 y 1.3.
-        coincidencia_clave = re.match(
-            r"^(\d+(?:\.\d+)+)\b\s*(.*)$",
-            linea,
-        )
-
-        if coincidencia_clave:
-            clave_pendiente = coincidencia_clave.group(1)
-            descripcion_acumulada = []
-            capturando_partida = True
-
-            texto_despues_clave = (
-                coincidencia_clave.group(2).strip()
-            )
-
-            if texto_despues_clave:
-                descripcion_acumulada.append(
-                    texto_despues_clave
-                )
-
-            continue
-
-        # Partidas sin clave visible.
+        # Los títulos de sección marcan una partida nueva.
         if re.match(
-            r"^BANQUETA(?:\s+\$[\d,]+\.\d{2})?$",
+            r"^(PRELIMINARES|BANQUETA|LIMPIEZA FINA)"
+            r"(?:\s+\$[\d,]+\.\d{2})?$",
             linea,
             flags=re.IGNORECASE,
         ):
-            clave_pendiente = str(
-                len(filas_validas) + 1
-            )
             descripcion_acumulada = []
-            capturando_partida = True
             continue
 
-        if re.match(
-            r"^LIMPIEZA FINA(?:\s+\$[\d,]+\.\d{2})?$",
-            linea,
-            flags=re.IGNORECASE,
-        ):
-            clave_pendiente = str(
-                len(filas_validas) + 1
-            )
-            descripcion_acumulada = []
-            capturando_partida = True
-            continue
-
-        coincidencia = patron_datos_partida.match(
+        coincidencia = patron_renglon_precio.match(
             linea
         )
 
-        if coincidencia and capturando_partida:
-
+        if coincidencia:
+            clave = coincidencia.group(1)
             descripcion_en_linea = (
-                coincidencia.group(1).strip()
+                coincidencia.group(2).strip()
             )
 
-            partes_descripcion = list(
+            partes = list(
                 descripcion_acumulada
             )
 
             if descripcion_en_linea:
-                partes_descripcion.append(
+                partes.append(
                     descripcion_en_linea
                 )
 
             descripcion = re.sub(
                 r"\s+",
                 " ",
-                " ".join(partes_descripcion),
+                " ".join(partes),
             ).strip()
 
             unidad = normalizar_unidad(
-                coincidencia.group(2)
-            )
-
-            cantidad = convertir_numero(
                 coincidencia.group(3)
             )
 
-            precio_unitario = convertir_numero(
+            cantidad = convertir_numero(
                 coincidencia.group(4)
             )
 
-            importe = convertir_numero(
+            precio_unitario = convertir_numero(
                 coincidencia.group(5)
+            )
+
+            importe = convertir_numero(
+                coincidencia.group(6)
             )
 
             if (
@@ -1270,23 +1221,19 @@ def leer_pdf(archivo):
                 and precio_unitario is not None
                 and precio_unitario > 0
             ):
-                filas_validas.append(
+                filas_obra.append(
                     {
                         "partida": (
-                            clave_pendiente
-                            if clave_pendiente
-                            else str(
-                                len(filas_validas) + 1
-                            )
+                            clave
+                            if clave
+                            else str(len(filas_obra) + 1)
                         ),
                         "concepto": descripcion,
                         "unidad": unidad,
                         "cantidad": cantidad,
                         "precio_unitario": precio_unitario,
                         "importe": importe,
-                        "origen": (
-                            f"Página {numero_pagina}"
-                        ),
+                        "origen": f"Página {numero_pagina}",
                         "fila_encabezado": None,
                         "puntaje_deteccion": 8,
                     }
@@ -1297,11 +1244,6 @@ def leer_pdf(archivo):
                 )
 
             descripcion_acumulada = []
-            clave_pendiente = None
-            capturando_partida = False
-            continue
-
-        if not capturando_partida:
             continue
 
         if any(
@@ -1310,12 +1252,16 @@ def leer_pdf(archivo):
         ):
             continue
 
+       
+
         descripcion_acumulada.append(
             linea
         )
 
-    # Conservar el método que haya encontrado más partidas.
-    if len(filas_tabla) > len(filas_validas):
+    # Conservar el método que encuentre más partidas.
+    if len(filas_obra) > len(filas_tabla):
+        filas_validas = filas_obra
+    else:
         filas_validas = filas_tabla
     # ======================================================
     # VALIDACIÓN Y LIMPIEZA FINAL
