@@ -1017,7 +1017,7 @@ def leer_pdf(archivo):
         texto_para_detectar_formato
     )
 
-        es_cotizacion_obra = (
+    es_cotizacion_obra = (
         "clave" in encabezado_normalizado
         and "descripcion" in encabezado_normalizado
         and "unidad" in encabezado_normalizado
