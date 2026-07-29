@@ -1164,8 +1164,7 @@ if not filas_validas:
 
     resultado = pd.DataFrame(
         filas_validas
-    )
-   
+    )   
     resultado["cantidad"] = pd.to_numeric(
         resultado["cantidad"],
         errors="coerce",
