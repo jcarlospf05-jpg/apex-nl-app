@@ -1108,226 +1108,215 @@ def leer_pdf(archivo):
     # TERCER INTENTO: OBRA CON DESCRIPCIONES MULTILÍNEA
     # ======================================================
 
-    if not filas_validas:
+    filas_tabla = list(filas_validas)
+    filas_validas = []
+    lineas_pdf = []
 
-        lineas_pdf = []
+    with pdfplumber.open(
+        io.BytesIO(contenido)
+    ) as pdf:
 
-        with pdfplumber.open(
-            io.BytesIO(contenido)
-        ) as pdf:
+        for numero_pagina, pagina in enumerate(
+            pdf.pages,
+            start=1,
+        ):
+            texto_pagina = pagina.extract_text() or ""
 
-            for numero_pagina, pagina in enumerate(
-                pdf.pages,
-                start=1,
-            ):
-                texto_pagina = pagina.extract_text() or ""
+            for linea in texto_pagina.splitlines():
 
-                for linea in texto_pagina.splitlines():
-
-                    linea = re.sub(
-                        r"\s+",
-                        " ",
-                        linea,
-                    ).strip()
-
-                    if linea:
-                        lineas_pdf.append(
-                            (numero_pagina, linea)
-                        )
-
-        patron_datos_partida = re.compile(
-            r"^(.*?)"
-            r"\b(M2|M3|ML|M|PZA|PZAS|SERVICIO|LOTE|KG|TON)\b"
-            r"\s+([\d,]+(?:\.\d+)?)"
-            r"\s+\$?\s*([\d,]+\.\d{2})"
-            r"\s+\$?\s*([\d,]+\.\d{2})$",
-            flags=re.IGNORECASE,
-        )
-
-        patron_clave = re.compile(
-            r"^(\d+(?:\.\d+)+)\s*(.*)$"
-        )
-
-        encabezados_seccion = [
-            "preliminares",
-            "banqueta",
-            "limpieza fina",
-        ]
-
-        textos_ignorar = [
-            "clave descripcion unidad cantidad",
-            "saro construcciones",
-            "www saroconstrucciones com",
-            "fecha monterrey",
-            "cliente",
-            "nombre de la empresa",
-            "proyecto",
-            "no de cotizacion",
-            "subtotal",
-            "iva",
-            "total",
-            "notas y condiciones",
-            "tiempo de ejecucion",
-            "condiciones de pago",
-            "duracion de propuesta",
-            "garantia",
-            "alcance",
-            "correo",
-            "telefono",
-            "celular",
-        ]
-
-        descripcion_acumulada = []
-        clave_pendiente = None
-        capturando_partida = False
-
-        for numero_pagina, linea in lineas_pdf:
-
-            linea_normalizada = normalizar_texto(
-                linea
-            )
-            # Detectar claves como:
-            # 1.1
-            # 1.2 EXCAVACIÓN...
-            # 1.3 RELLENO...
-            coincidencia_clave = re.match(
-                r"^(\d+(?:\.\d+)+)\b\s*(.*)$",
-                linea,
-            )
-
-            if coincidencia_clave:
-                clave_pendiente = coincidencia_clave.group(1)
-                descripcion_acumulada = []
-                capturando_partida = True
-
-                texto_despues_clave = (
-                    coincidencia_clave.group(2).strip()
-                )
-
-                if texto_despues_clave:
-                    descripcion_acumulada.append(
-                        texto_despues_clave
-                    )
-
-                continue
-
-            # Iniciar partidas sin clave visible:
-            # BANQUETA y LIMPIEZA FINA.
-            if re.match(
-                r"^BANQUETA(?:\s+\$[\d,]+\.\d{2})?$",
-                linea,
-                flags=re.IGNORECASE,
-            ):
-                clave_pendiente = str(
-                    len(filas_validas) + 1
-                )
-                descripcion_acumulada = []
-                capturando_partida = True
-                continue
-
-            if re.match(
-                r"^LIMPIEZA FINA(?:\s+\$[\d,]+\.\d{2})?$",
-                linea,
-                flags=re.IGNORECASE,
-            ):
-                clave_pendiente = str(
-                    len(filas_validas) + 1
-                )
-                descripcion_acumulada = []
-                capturando_partida = True
-                continue
-
-            coincidencia = patron_datos_partida.match(
-                linea
-            )
-
-            if coincidencia and capturando_partida:
-
-                descripcion_en_linea = (
-                    coincidencia.group(1).strip()
-                )
-
-                partes_descripcion = list(
-                    descripcion_acumulada
-                )
-
-                if descripcion_en_linea:
-                    partes_descripcion.append(
-                        descripcion_en_linea
-                    )
-
-                descripcion = re.sub(
+                linea = re.sub(
                     r"\s+",
                     " ",
-                    " ".join(partes_descripcion),
+                    linea,
                 ).strip()
 
-                unidad = normalizar_unidad(
-                    coincidencia.group(2)
-                )
-
-                cantidad = convertir_numero(
-                    coincidencia.group(3)
-                )
-
-                precio_unitario = convertir_numero(
-                    coincidencia.group(4)
-                )
-
-                importe = convertir_numero(
-                    coincidencia.group(5)
-                )
-
-                if (
-                    descripcion
-                    and precio_unitario is not None
-                    and precio_unitario > 0
-                ):
-                    filas_validas.append(
-                        {
-                            "partida": (
-                                clave_pendiente
-                                if clave_pendiente
-                                else str(
-                                    len(filas_validas) + 1
-                                )
-                            ),
-                            "concepto": descripcion,
-                            "unidad": unidad,
-                            "cantidad": cantidad,
-                            "precio_unitario": precio_unitario,
-                            "importe": importe,
-                            "origen": (
-                                f"Página {numero_pagina}"
-                            ),
-                            "fila_encabezado": None,
-                            "puntaje_deteccion": 8,
-                        }
+                if linea:
+                    lineas_pdf.append(
+                        (numero_pagina, linea)
                     )
 
-                    paginas_detectadas.add(
-                        numero_pagina
-                    )
+    patron_datos_partida = re.compile(
+        r"^(.*?)"
+        r"\b(M2|M3|ML|M|PZA|PZAS|SERVICIO|LOTE|KG|TON)\b"
+        r"\s+([\d,]+(?:\.\d+)?)"
+        r"\s+\$?\s*([\d,]+\.\d{2})"
+        r"\s+\$?\s*([\d,]+\.\d{2})$",
+        flags=re.IGNORECASE,
+    )
 
-                descripcion_acumulada = []
-                clave_pendiente = None
-                capturando_partida = False
-                continue
+    textos_ignorar = [
+        "clave descripcion unidad cantidad",
+        "saro construcciones",
+        "www saroconstrucciones com",
+        "fecha monterrey",
+        "cliente",
+        "nombre de la empresa",
+        "proyecto",
+        "no de cotizacion",
+        "subtotal",
+        "iva",
+        "total",
+        "notas y condiciones",
+        "tiempo de ejecucion",
+        "condiciones de pago",
+        "duracion de propuesta",
+        "garantia",
+        "alcance",
+        "correo",
+        "telefono",
+        "celular",
+    ]
 
-            # Solo acumular texto cuando ya comenzó una partida.
-            if not capturando_partida:
-                continue
+    descripcion_acumulada = []
+    clave_pendiente = None
+    capturando_partida = False
 
-            # Evitar encabezados y datos generales.
-            if any(
-                texto in linea_normalizada
-                for texto in textos_ignorar
-            ):
-                continue
+    for numero_pagina, linea in lineas_pdf:
 
-            descripcion_acumulada.append(
-                linea
+        linea_normalizada = normalizar_texto(
+            linea
+        )
+
+        # Detectar claves como 1.1, 1.2 y 1.3.
+        coincidencia_clave = re.match(
+            r"^(\d+(?:\.\d+)+)\b\s*(.*)$",
+            linea,
+        )
+
+        if coincidencia_clave:
+            clave_pendiente = coincidencia_clave.group(1)
+            descripcion_acumulada = []
+            capturando_partida = True
+
+            texto_despues_clave = (
+                coincidencia_clave.group(2).strip()
             )
+
+            if texto_despues_clave:
+                descripcion_acumulada.append(
+                    texto_despues_clave
+                )
+
+            continue
+
+        # Partidas sin clave visible.
+        if re.match(
+            r"^BANQUETA(?:\s+\$[\d,]+\.\d{2})?$",
+            linea,
+            flags=re.IGNORECASE,
+        ):
+            clave_pendiente = str(
+                len(filas_validas) + 1
+            )
+            descripcion_acumulada = []
+            capturando_partida = True
+            continue
+
+        if re.match(
+            r"^LIMPIEZA FINA(?:\s+\$[\d,]+\.\d{2})?$",
+            linea,
+            flags=re.IGNORECASE,
+        ):
+            clave_pendiente = str(
+                len(filas_validas) + 1
+            )
+            descripcion_acumulada = []
+            capturando_partida = True
+            continue
+
+        coincidencia = patron_datos_partida.match(
+            linea
+        )
+
+        if coincidencia and capturando_partida:
+
+            descripcion_en_linea = (
+                coincidencia.group(1).strip()
+            )
+
+            partes_descripcion = list(
+                descripcion_acumulada
+            )
+
+            if descripcion_en_linea:
+                partes_descripcion.append(
+                    descripcion_en_linea
+                )
+
+            descripcion = re.sub(
+                r"\s+",
+                " ",
+                " ".join(partes_descripcion),
+            ).strip()
+
+            unidad = normalizar_unidad(
+                coincidencia.group(2)
+            )
+
+            cantidad = convertir_numero(
+                coincidencia.group(3)
+            )
+
+            precio_unitario = convertir_numero(
+                coincidencia.group(4)
+            )
+
+            importe = convertir_numero(
+                coincidencia.group(5)
+            )
+
+            if (
+                descripcion
+                and precio_unitario is not None
+                and precio_unitario > 0
+            ):
+                filas_validas.append(
+                    {
+                        "partida": (
+                            clave_pendiente
+                            if clave_pendiente
+                            else str(
+                                len(filas_validas) + 1
+                            )
+                        ),
+                        "concepto": descripcion,
+                        "unidad": unidad,
+                        "cantidad": cantidad,
+                        "precio_unitario": precio_unitario,
+                        "importe": importe,
+                        "origen": (
+                            f"Página {numero_pagina}"
+                        ),
+                        "fila_encabezado": None,
+                        "puntaje_deteccion": 8,
+                    }
+                )
+
+                paginas_detectadas.add(
+                    numero_pagina
+                )
+
+            descripcion_acumulada = []
+            clave_pendiente = None
+            capturando_partida = False
+            continue
+
+        if not capturando_partida:
+            continue
+
+        if any(
+            texto in linea_normalizada
+            for texto in textos_ignorar
+        ):
+            continue
+
+        descripcion_acumulada.append(
+            linea
+        )
+
+    # Conservar el método que haya encontrado más partidas.
+    if len(filas_tabla) > len(filas_validas):
+        filas_validas = filas_tabla
     # ======================================================
     # VALIDACIÓN Y LIMPIEZA FINAL
     # ======================================================
