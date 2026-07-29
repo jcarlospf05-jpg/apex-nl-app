@@ -80,7 +80,7 @@ INDICADOR_INPC_MENSUAL = os.environ.get("INEGI_INDICADOR_INPC", "628194")
 
 _INEGI_API_URL = (
     "https://www.inegi.org.mx/app/api/indicadores/desarrolladores/jsonxml/"
-    "INDICATOR/{indicador}/es/0700/true/BIE/2.0/{token}?type=json"
+    "INDICATOR/{indicador}/es/00/true/BISE/2.0/{token}?type=json"
 )
 
 _cache_inegi = {"resultado": None, "timestamp": 0.0}
