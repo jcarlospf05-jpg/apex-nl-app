@@ -1025,7 +1025,7 @@ def leer_pdf(archivo):
                 patron_servicio_global.group(5).replace(",", "")
             )
 
-filas_validas.append(
+    filas_validas.append(
     {
         "partida": 1,
         "concepto": descripcion,
@@ -1039,7 +1039,7 @@ filas_validas.append(
     }
 )
 
-            paginas_detectadas.add(1)
+        paginas_detectadas.add(1)
 
     if not filas_validas:
         raise ValueError(
