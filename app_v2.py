@@ -837,12 +837,12 @@ def leer_csv(archivo):
 
 def leer_pdf(archivo):
     """
-    Lee PDF digitales con tablas.
+    Lee PDF digitales con distintos formatos:
 
-    Reconoce formatos como:
-    PDA | DESCRIPCION | UNIDAD | CDAD |
-    PRECIO MATERIAL | PRECIO M.O |
-    PRECIO UNITARIO | IMPORTE
+    1. Tablas de 8 columnas.
+    2. Tablas de 6 columnas.
+    3. Cotizaciones con una sola partida global.
+    4. Cotizaciones de obra con descripciones de varias líneas.
 
     No utiliza OCR.
     """
@@ -859,6 +859,10 @@ def leer_pdf(archivo):
 
     filas_validas = []
     paginas_detectadas = set()
+
+    # ======================================================
+    # PRIMER INTENTO: TABLAS DE 6 U 8 COLUMNAS
+    # ======================================================
 
     with pdfplumber.open(
         io.BytesIO(contenido)
@@ -922,18 +926,17 @@ def leer_pdf(archivo):
                         else ""
                     )
 
-                    # Eliminar saltos de línea dentro de la descripción.
                     concepto_texto = re.sub(
                         r"\s+",
                         " ",
                         concepto_texto,
                     ).strip()
 
-                    # Saltar encabezados.
                     if normalizar_texto(partida_texto) in {
                         "pda",
                         "partida",
                         "item",
+                        "clave",
                     }:
                         continue
 
@@ -943,18 +946,6 @@ def leer_pdf(archivo):
                     }:
                         continue
 
-                    # Solo aceptar renglones con número de partida.
-                    coincidencia_partida = re.search(
-                        r"\d+(?:\.\d+)?",
-                        partida_texto,
-                    )
-
-                    if coincidencia_partida:
-                        partida_limpia = coincidencia_partida.group()
-                    else:
-                        partida_limpia = str(
-                            len(filas_validas) + 1
-                        )
                     cantidad_numero = convertir_numero(
                         cantidad
                     )
@@ -970,8 +961,25 @@ def leer_pdf(archivo):
                     if not concepto_texto:
                         continue
 
-                    if precio_numero is None or precio_numero <= 0:
+                    if (
+                        precio_numero is None
+                        or precio_numero <= 0
+                    ):
                         continue
+
+                    coincidencia_partida = re.search(
+                        r"\d+(?:\.\d+)?",
+                        partida_texto,
+                    )
+
+                    if coincidencia_partida:
+                        partida_limpia = (
+                            coincidencia_partida.group()
+                        )
+                    else:
+                        partida_limpia = str(
+                            len(filas_validas) + 1
+                        )
 
                     filas_validas.append(
                         {
@@ -995,10 +1003,12 @@ def leer_pdf(archivo):
                         numero_pagina
                     )
 
+    # ======================================================
+    # SEGUNDO INTENTO: UNA SOLA PARTIDA GLOBAL
+    # ======================================================
+
     if not filas_validas:
-        # Segundo intento:
-        # cotizaciones con una sola partida global,
-        # sin columna PDA o número de partida.
+
         with pdfplumber.open(
             io.BytesIO(contenido)
         ) as pdf:
@@ -1018,16 +1028,17 @@ def leer_pdf(archivo):
             r"\$?\s*([\d,]+\.\d{2})",
             texto_completo,
             flags=re.IGNORECASE | re.DOTALL,
-         )
+        )
 
         if patron_servicio_global:
+
             descripcion = re.sub(
                 r"\s+",
                 " ",
                 patron_servicio_global.group(1),
             ).strip()
 
-            cantidad = float(
+            cantidad = convertir_numero(
                 patron_servicio_global.group(2)
             )
 
@@ -1035,17 +1046,17 @@ def leer_pdf(archivo):
                 patron_servicio_global.group(3)
             )
 
-            precio_unitario = float(
-                patron_servicio_global.group(4).replace(",", "")
+            precio_unitario = convertir_numero(
+                patron_servicio_global.group(4)
             )
 
-            importe = float(
-                patron_servicio_global.group(5).replace(",", "")
+            importe = convertir_numero(
+                patron_servicio_global.group(5)
             )
 
             filas_validas.append(
                 {
-                    "partida": 1,
+                    "partida": "1",
                     "concepto": descripcion,
                     "unidad": unidad,
                     "cantidad": cantidad,
@@ -1058,13 +1069,18 @@ def leer_pdf(archivo):
             )
 
             paginas_detectadas.add(1)
+
+    # ======================================================
+    # TERCER INTENTO: OBRA CON DESCRIPCIONES MULTILÍNEA
+    # ======================================================
+
     if not filas_validas:
-        # Tercer intento:
-        # cotizaciones de obra donde la descripción ocupa varias líneas.
+
+        lineas_pdf = []
+
         with pdfplumber.open(
             io.BytesIO(contenido)
         ) as pdf:
-            lineas_pdf = []
 
             for numero_pagina, pagina in enumerate(
                 pdf.pages,
@@ -1073,6 +1089,7 @@ def leer_pdf(archivo):
                 texto_pagina = pagina.extract_text() or ""
 
                 for linea in texto_pagina.splitlines():
+
                     linea = re.sub(
                         r"\s+",
                         " ",
@@ -1097,36 +1114,58 @@ def leer_pdf(archivo):
             r"^\d+(?:\.\d+)+$"
         )
 
-        lineas_ignorar = [
+        encabezados_seccion = [
+            "preliminares",
+            "banqueta",
+            "limpieza fina",
+        ]
+
+        textos_ignorar = [
             "clave descripcion unidad cantidad",
             "saro construcciones",
             "www saroconstrucciones com",
+            "fecha monterrey",
             "cliente",
             "nombre de la empresa",
             "proyecto",
             "no de cotizacion",
-            "fecha monterrey",
             "subtotal",
             "iva",
             "total",
-            "preliminares",
-            "banqueta",
-            "limpieza fina",
-            "banquetas exteriores",
+            "notas y condiciones",
+            "tiempo de ejecucion",
+            "condiciones de pago",
+            "duracion de propuesta",
+            "garantia",
+            "alcance",
+            "correo",
+            "telefono",
+            "celular",
         ]
 
-        acumulado_descripcion = []
+        descripcion_acumulada = []
         clave_pendiente = None
 
         for numero_pagina, linea in lineas_pdf:
+
             linea_normalizada = normalizar_texto(
                 linea
             )
 
-            # Detectar claves como 1.1, 1.2 y 1.3.
+            # Claves como 1.1, 1.2 y 1.3.
             if patron_clave.fullmatch(linea):
+
                 clave_pendiente = linea
-                acumulado_descripcion = []
+                descripcion_acumulada = []
+                continue
+
+            # Encabezados como BANQUETA o LIMPIEZA FINA.
+            if any(
+                linea_normalizada.startswith(encabezado)
+                for encabezado in encabezados_seccion
+            ):
+                descripcion_acumulada = []
+                clave_pendiente = None
                 continue
 
             coincidencia = patron_datos_partida.match(
@@ -1134,10 +1173,13 @@ def leer_pdf(archivo):
             )
 
             if coincidencia:
-                descripcion_en_linea = coincidencia.group(1).strip()
+
+                descripcion_en_linea = (
+                    coincidencia.group(1).strip()
+                )
 
                 partes_descripcion = list(
-                    acumulado_descripcion
+                    descripcion_acumulada
                 )
 
                 if descripcion_en_linea:
@@ -1177,14 +1219,18 @@ def leer_pdf(archivo):
                             "partida": (
                                 clave_pendiente
                                 if clave_pendiente
-                                else str(len(filas_validas) + 1)
+                                else str(
+                                    len(filas_validas) + 1
+                                )
                             ),
                             "concepto": descripcion,
                             "unidad": unidad,
                             "cantidad": cantidad,
                             "precio_unitario": precio_unitario,
                             "importe": importe,
-                            "origen": f"Página {numero_pagina}",
+                            "origen": (
+                                f"Página {numero_pagina}"
+                            ),
                             "fila_encabezado": None,
                             "puntaje_deteccion": 8,
                         }
@@ -1194,28 +1240,33 @@ def leer_pdf(archivo):
                         numero_pagina
                     )
 
-                acumulado_descripcion = []
+                descripcion_acumulada = []
                 clave_pendiente = None
                 continue
 
-            # Ignorar encabezados, subtotales y datos generales.
+            # No acumular información general ni totales.
             if any(
                 texto in linea_normalizada
-                for texto in lineas_ignorar
+                for texto in textos_ignorar
             ):
                 continue
 
-            # Ignorar líneas que solo contienen un monto de sección.
+            # No acumular títulos con un monto de sección.
             if re.fullmatch(
-                r"[A-ZÁÉÍÓÚÑ\s]+\$[\d,]+\.\d{2}",
+                r"[A-ZÁÉÍÓÚÑ\s]+\s+\$[\d,]+\.\d{2}",
                 linea,
                 flags=re.IGNORECASE,
             ):
+                descripcion_acumulada = []
                 continue
 
-            acumulado_descripcion.append(
+            descripcion_acumulada.append(
                 linea
             )
+
+    # ======================================================
+    # VALIDACIÓN Y LIMPIEZA FINAL
+    # ======================================================
 
     if not filas_validas:
         raise ValueError(
@@ -1226,7 +1277,8 @@ def leer_pdf(archivo):
 
     resultado = pd.DataFrame(
         filas_validas
-    )   
+    )
+
     resultado["cantidad"] = pd.to_numeric(
         resultado["cantidad"],
         errors="coerce",
@@ -1279,16 +1331,18 @@ def leer_pdf(archivo):
             f"{len(paginas_detectadas)} páginas con partidas"
         ),
         "partidas": len(resultado),
-        "confianza": 95,
+        "confianza": (
+            95 if len(resultado) > 0 else 0
+        ),
     }
 
     return resultado, metadatos
-
 
 # ==========================================================
 # IDENTIFICACIÓN DE FORMATO
 # ==========================================================
 
+  
 def cargar_y_normalizar_archivo(archivo):
     extension = Path(
         archivo.name
