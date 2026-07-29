@@ -1018,8 +1018,8 @@ def leer_pdf(archivo):
         texto_para_detectar_formato
     )
 
-    claves_obra_detectadas = re.findall(
-        r"(?m)^\s*\d+(?:\.\d+)+\s*$",
+        claves_obra_detectadas = re.findall(
+        r"\b\d+\.\d+\b",
         texto_para_detectar_formato,
     )
 
@@ -1027,7 +1027,8 @@ def leer_pdf(archivo):
         "precio unitario" in encabezado_normalizado
         and "unidad" in encabezado_normalizado
         and "cantidad" in encabezado_normalizado
-        and len(claves_obra_detectadas) >= 2
+        and "importe" in encabezado_normalizado
+        and len(set(claves_obra_detectadas)) >= 2
     )
 
     if es_cotizacion_obra:
