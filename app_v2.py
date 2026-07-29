@@ -1002,7 +1002,30 @@ def leer_pdf(archivo):
                     paginas_detectadas.add(
                         numero_pagina
                     )
+    # Detectar cotizaciones de obra tipo SARO.
+    # En este formato, la extracción automática de tablas
+    # puede mezclar las descripciones de las partidas.
+    with pdfplumber.open(
+        io.BytesIO(contenido)
+    ) as pdf:
+        texto_para_detectar_formato = "\n".join(
+            pagina.extract_text() or ""
+            for pagina in pdf.pages
+        )
 
+    encabezado_normalizado = normalizar_texto(
+        texto_para_detectar_formato
+    )
+
+    es_cotizacion_obra = (
+        "clave descripcion unidad cantidad "
+        "precio unitario importe"
+        in encabezado_normalizado
+    )
+
+    if es_cotizacion_obra:
+        filas_validas = []
+        paginas_detectadas = set()
     # ======================================================
     # SEGUNDO INTENTO: UNA SOLA PARTIDA GLOBAL
     # ======================================================
