@@ -1,7 +1,6 @@
 """
 Comparador multi-fuente - Revision economica de cotizaciones/licitaciones CAPEX
 =================================================================================
-
 Evalua una partida cotizada contra TODAS las fuentes de precio disponibles y
 regresa un veredicto por fuente + un veredicto combinado.
 
@@ -20,7 +19,6 @@ Fuentes con interfaz lista pero SIN datos todavia (no se inventa nada):
 
 Uso:
     from comparador_multifuente_v2 import ComparadorMultiFuente
-
     c = ComparadorMultiFuente("Base_Precios_Unitarios_NL_CDMX.xlsx")
     veredicto = c.evaluar(
         descripcion="Suministro y colocacion de acero de refuerzo en losas, varilla corrugada",
@@ -29,13 +27,17 @@ Uso:
     )
     print(veredicto)
 """
-
 import re
 import unicodedata
 import pandas as pd
 from rapidfuzz import fuzz, process
 
-from ajuste_inflacion import factor_ajuste, ajustar_precio, ETIQUETA_ACTUAL, FUENTE as FUENTE_INPC
+import ajuste_inflacion as _inflacion
+from ajuste_inflacion import factor_ajuste, ajustar_precio, FUENTE as FUENTE_INPC
+# Nota: ETIQUETA_ACTUAL se lee como _inflacion.ETIQUETA_ACTUAL (no se importa
+# el nombre suelto) porque refrescar_nivel_actual() lo actualiza en tiempo de
+# ejecucion; si se importara como valor suelto aqui, este modulo se quedaria
+# con la etiqueta vieja aunque el numero (via factor_ajuste) si se actualice.
 
 LEADING_CODE_RE = re.compile(r'^\s*[\d.]{1,15}\s+')
 WS_RE = re.compile(r'\s+')
@@ -59,119 +61,87 @@ def normalize_unit(u: str) -> str:
     if not isinstance(u, str) or not u.strip():
         return 'SIN_UNIDAD'
     return u.strip().upper().replace('.', '')
-  
+
 
 def extraer_amperaje(texto: str):
     texto = normalize_text(texto)
-
     patrones = [
         r'\b\d+\s*X\s*(\d+(?:\.\d+)?)\s*(?:A|AMPS?\.?|AMPERES?)\b',
         r'\b(\d+(?:\.\d+)?)\s*(?:A|AMPS?\.?|AMPERES?)\b',
     ]
-
     for patron in patrones:
         coincidencia = re.search(patron, texto)
-
         if coincidencia:
             return float(coincidencia.group(1))
-
     return None
 
 
 def extraer_polos(texto: str):
     texto = normalize_text(texto)
-
     patrones = [
         r'\b([1-4])\s*X\s*\d+(?:\.\d+)?\s*(?:A|AMPS?\.?|AMPERES?)\b',
         r'\b([1-4])\s*POLOS?\b',
     ]
-
     for patron in patrones:
         coincidencia = re.search(patron, texto)
-
         if coincidencia:
             return int(coincidencia.group(1))
-
     return None
 
 
 def extraer_calibre_awg(texto: str):
     texto = normalize_text(texto)
-
     patrones = [
         r'\bCAL(?:IBRE)?\.?\s*(\d{1,3})\b',
         r'\b\d+\s*X\s*(\d{1,3})\s*AWG\b',
         r'\b(\d{1,3})\s*AWG\b',
     ]
-
     for patron in patrones:
         coincidencia = re.search(patron, texto)
-
         if coincidencia:
             return int(coincidencia.group(1))
-
     return None
+
+
 def extraer_numero_conductores(texto: str):
     """
     Extrae la cantidad de conductores en expresiones como:
     3X14 AWG, 4 X 12 AWG.
     """
     texto = normalize_text(texto)
-
     coincidencia = re.search(
         r'\b(\d+)\s*X\s*\d{1,3}\s*AWG\b',
         texto,
     )
-
     if coincidencia:
         return int(coincidencia.group(1))
-
     return None
 
 
 def extraer_diametro_mm(texto: str):
     texto = normalize_text(texto)
-
     coincidencia = re.search(
         r'\b(\d+(?:\.\d+)?)\s*MM\b',
         texto,
     )
-
     if coincidencia:
         return float(coincidencia.group(1))
-
-    return None
-
-def extraer_diametro_mm(texto: str):
-    texto = normalize_text(texto)
-
-    coincidencia = re.search(
-        r'\b(\d+(?:\.\d+)?)\s*MM\b',
-        texto,
-    )
-
-    if coincidencia:
-        return float(coincidencia.group(1))
-
     return None
 
 
 def extraer_diametro_pulgadas(texto: str):
     texto = str(texto).upper()
-
     coincidencia = re.search(
         r'\b(\d+(?:\.\d+)?|\d+/\d+)\s*(?:"|PULG)',
         texto,
     )
-
     if coincidencia:
         return coincidencia.group(1)
-
     return None
+
 
 def detectar_familia_producto(texto: str):
     texto = normalize_text(texto)
-
     familias = {
         "interruptor": [
             "INTERRUPTOR",
@@ -244,102 +214,78 @@ def detectar_familia_producto(texto: str):
             "ASEO",
         ],
     }
-
     for familia, palabras in familias.items():
         for palabra in palabras:
             if palabra in texto:
                 return familia
-
     return None
+
 
 def detectar_subtipo_cable(texto: str):
     texto = normalize_text(texto)
-
     if "COBRE DESNUDO" in texto or "CABLE DESNUDO" in texto:
         return "COBRE_DESNUDO"
-
     if "USO RUDO" in texto:
         return "USO_RUDO"
-
     if "ARMOFLEX" in texto:
         return "ARMOFLEX"
-
     if "THW-LS" in texto or "THW LS" in texto:
         return "THW_LS"
-
     return None
 
 
 def detectar_subtipo_tuberia(texto: str):
     texto = normalize_text(texto)
-
     if "LICUATITE" in texto or "LIQUIDTIGHT" in texto:
         return "LICUATITE"
-
     if "POLIFLEX" in texto:
         return "POLIFLEX"
-
     if "CONDUIT" in texto:
         return "CONDUIT"
-
     if (
         "PVC SANITARIO" in texto
         or "TUBO SANITARIO" in texto
         or "ALBANAL" in texto
     ):
         return "PVC_SANITARIO"
-
     if "PVC" in texto:
         return "PVC"
-
     return None
 
 
 def detectar_subtipo_caja(texto: str):
     texto = normalize_text(texto)
-
     if "ALBANAL" in texto:
         return "REGISTRO_ALBANAL"
-
     if "OCTAGONAL" in texto:
         return "CAJA_OCTAGONAL"
-
     if "CAJA FSCA" in texto:
         return "CAJA_FSCA"
-
     if re.search(r"\bCAJA\s+FS\b", texto):
         return "CAJA_FS"
-
     if "CAJA REGISTRO" in texto:
         return "REGISTRO_ELECTRICO"
-
     if "CHALUPA" in texto:
         return "CHALUPA"
-
     if "GALVANIZ" in texto:
         return "CAJA_GALVANIZADA"
-
     return None
 
 
 def extraer_medida_caja(texto: str):
     texto = normalize_text(texto)
-
     coincidencia = re.search(
         r"\b(\d+(?:\.\d+)?)\s*X\s*(\d+(?:\.\d+)?)"
         r"(?:\s*X\s*(\d+(?:\.\d+)?))?\b",
         texto,
     )
-
     if not coincidencia:
         return None
-
     medidas = [
         valor
         for valor in coincidencia.groups()
         if valor is not None
     ]
-
     return "X".join(medidas)
 
 
@@ -350,13 +296,11 @@ def validar_compatibilidad_tecnica(
     familia_entrada = detectar_familia_producto(
         descripcion_entrada
     )
-
     familia_referencia = detectar_familia_producto(
         descripcion_referencia
     )
     texto_entrada = normalize_text(descripcion_entrada)
     texto_referencia = normalize_text(descripcion_referencia)
-
     entrada_es_registro_electrico = (
         "REGISTRO" in texto_entrada
         and (
@@ -364,17 +308,14 @@ def validar_compatibilidad_tecnica(
             or "CAJA" in texto_entrada
         )
     )
-
     referencia_es_albanal = (
         "REGISTRO" in texto_referencia
         and "ALBANAL" in texto_referencia
     )
-
     entrada_es_albanal = (
         "REGISTRO" in texto_entrada
         and "ALBANAL" in texto_entrada
     )
-
     referencia_es_registro_electrico = (
         "REGISTRO" in texto_referencia
         and (
@@ -382,7 +323,6 @@ def validar_compatibilidad_tecnica(
             or "CAJA" in texto_referencia
         )
     )
-
     if (
         entrada_es_registro_electrico
         and referencia_es_albanal
@@ -395,7 +335,6 @@ def validar_compatibilidad_tecnica(
             "registro eléctrico incompatible con registro de albañal",
         )
 
-  
     # La referencia debe pertenecer a la misma familia.
     if (
         familia_entrada is not None
@@ -406,17 +345,14 @@ def validar_compatibilidad_tecnica(
             f"familia diferente: "
             f"{familia_entrada} vs {familia_referencia}",
         )
-
     # Validación específica para cables.
     if familia_entrada == "cable":
         subtipo_entrada = detectar_subtipo_cable(
             descripcion_entrada
         )
-
         subtipo_referencia = detectar_subtipo_cable(
             descripcion_referencia
         )
-
         if (
             subtipo_entrada is not None
             and subtipo_referencia != subtipo_entrada
@@ -426,17 +362,14 @@ def validar_compatibilidad_tecnica(
                 f"subtipo de cable diferente o no identificado: "
                 f"{subtipo_entrada} vs {subtipo_referencia}",
             )
-
     # Validación específica para tuberías.
     if familia_entrada == "tuberia_electrica":
         subtipo_entrada = detectar_subtipo_tuberia(
             descripcion_entrada
         )
-
         subtipo_referencia = detectar_subtipo_tuberia(
             descripcion_referencia
         )
-
         if (
             subtipo_entrada is not None
             and subtipo_referencia != subtipo_entrada
@@ -446,17 +379,14 @@ def validar_compatibilidad_tecnica(
                 f"subtipo de tubería diferente o no identificado: "
                 f"{subtipo_entrada} vs {subtipo_referencia}",
             )
-
     # Validación específica para cajas y registros.
     if familia_entrada == "caja_electrica":
         subtipo_entrada = detectar_subtipo_caja(
             descripcion_entrada
         )
-
         subtipo_referencia = detectar_subtipo_caja(
             descripcion_referencia
         )
-
         if (
             subtipo_entrada is not None
             and subtipo_referencia != subtipo_entrada
@@ -466,15 +396,12 @@ def validar_compatibilidad_tecnica(
                 f"subtipo de caja diferente o no identificado: "
                 f"{subtipo_entrada} vs {subtipo_referencia}",
             )
-
         medida_entrada = extraer_medida_caja(
             descripcion_entrada
         )
-
         medida_referencia = extraer_medida_caja(
             descripcion_referencia
         )
-
         if (
             medida_entrada is not None
             and medida_referencia != medida_entrada
@@ -484,7 +411,6 @@ def validar_compatibilidad_tecnica(
                 f"medida de caja diferente o no identificada: "
                 f"{medida_entrada} vs {medida_referencia}",
             )
-
     validaciones = [
         (
             "amperaje",
@@ -525,7 +451,6 @@ def validar_compatibilidad_tecnica(
             ),
         ),
     ]
-
     for nombre, entrada, referencia in validaciones:
         if (
             entrada is not None
@@ -536,7 +461,6 @@ def validar_compatibilidad_tecnica(
                 f"{nombre} diferente o no identificado: "
                 f"{entrada} vs {referencia}",
             )
-
     return True, None
 
 
@@ -563,7 +487,6 @@ class ComparadorMultiFuente:
             u: df
             for u, df in self.nl.groupby('unidad_norm')
         }
-
         self._cdmx_pools = {
             u: df
             for u, df in self.cdmx.groupby('unidad_norm')
@@ -600,14 +523,11 @@ class ComparadorMultiFuente:
         text_col='concepto_norm',
     ):
         pool = pools.get(u)
-
         if pool is None or pool.empty:
             return None
-
         choices = pool[
             text_col
         ].fillna("").tolist()
-
         candidatos = process.extract(
             t,
             choices,
@@ -615,28 +535,21 @@ class ComparadorMultiFuente:
             score_cutoff=min_score,
             limit=25,
         )
-
         if not candidatos:
             return None
-
         for _, score, indice in candidatos:
             row = pool.iloc[indice]
-
             descripcion_referencia = row.get(
                 text_col,
                 "",
             )
-
             compatible, _ = validar_compatibilidad_tecnica(
                 t,
                 descripcion_referencia,
             )
-
             if not compatible:
                 continue
-
             return float(score), row
-
         return None
 
     def evaluar(self, descripcion: str, unidad: str, precio_cotizado: float,
@@ -644,7 +557,6 @@ class ComparadorMultiFuente:
                 ajustar_inflacion: bool = True) -> dict:
         t = normalize_text(descripcion)
         u = normalize_unit(unidad)
-
         resultado = {
             'entrada': {'descripcion': descripcion, 'unidad': u, 'precio_cotizado': precio_cotizado},
             'fuentes': {},
@@ -656,11 +568,9 @@ class ComparadorMultiFuente:
             score, row = m
             anio_dato = str(row['fecha_max'])[:4]
             factor = factor_ajuste(anio_dato) if ajustar_inflacion else 1.0
-
             p25_uso = ajustar_precio(row['precio_p25'], anio_dato) if ajustar_inflacion else float(row['precio_p25'])
             p75_uso = ajustar_precio(row['precio_p75'], anio_dato) if ajustar_inflacion else float(row['precio_p75'])
             veredicto = clasificar(precio_cotizado, p25_uso, p75_uso)
-
             resultado['fuentes']['nl_historico'] = {
                 'match': row['concepto_homologado'], 'score': round(score, 1),
                 'precio_min': float(row['precio_min']), 'precio_p25': float(row['precio_p25']),
@@ -672,7 +582,7 @@ class ComparadorMultiFuente:
                 'factor_ajuste_inpc': round(factor, 4),
                 'precio_p25_ajustado': p25_uso, 'precio_p75_ajustado': p75_uso,
                 'precio_mediana_ajustada': ajustar_precio(row['precio_mediana'], anio_dato) if ajustar_inflacion else float(row['precio_mediana']),
-                'referencia_ajuste': f'INPC INEGI, {anio_dato} -> {ETIQUETA_ACTUAL} ({FUENTE_INPC})' if ajustar_inflacion else None,
+                'referencia_ajuste': f'INPC INEGI, {anio_dato} -> {_inflacion.ETIQUETA_ACTUAL} ({FUENTE_INPC})' if ajustar_inflacion else None,
                 'clasificacion': veredicto,
             }
         else:
@@ -752,9 +662,9 @@ class ComparadorMultiFuente:
 if __name__ == '__main__':
     import sys
     import json
+
     excel = sys.argv[1] if len(sys.argv) > 1 else 'Base_Precios_Unitarios_NL_CDMX.xlsx'
     c = ComparadorMultiFuente(excel)
-
     ejemplos = [
         ("Suministro y colocacion de acero de refuerzo en losas, varilla corrugada", "KG", 30),
         ("Limpieza final de obra durante todo el periodo de ejecucion", "M2", 9),
