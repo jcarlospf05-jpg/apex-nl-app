@@ -1060,100 +1060,162 @@ def leer_pdf(archivo):
             paginas_detectadas.add(1)
     if not filas_validas:
         # Tercer intento:
-        # cotizaciones de obra con estructura:
-        # clave + descripción + unidad + cantidad + P.U. + importe
+        # cotizaciones de obra donde la descripción ocupa varias líneas.
         with pdfplumber.open(
             io.BytesIO(contenido)
         ) as pdf:
-            texto_completo = "\n".join(
-                pagina.extract_text() or ""
-                for pagina in pdf.pages
-            )
+            lineas_pdf = []
 
-        patron_partidas_obra = re.compile(
-            r"(?:(\d+(?:\.\d+)?)\s+)?"
-            r"(.+?)\s+"
-            r"(M2|M3|ML|M|PZA|PZAS|SERVICIO|LOTE|KG|TON)\s+"
-            r"([\d,]+(?:\.\d+)?)\s+"
-            r"\$?\s*([\d,]+\.\d{2})\s+"
-            r"\$?\s*([\d,]+\.\d{2})",
-            flags=re.IGNORECASE | re.DOTALL,
+            for numero_pagina, pagina in enumerate(
+                pdf.pages,
+                start=1,
+            ):
+                texto_pagina = pagina.extract_text() or ""
+
+                for linea in texto_pagina.splitlines():
+                    linea = re.sub(
+                        r"\s+",
+                        " ",
+                        linea,
+                    ).strip()
+
+                    if linea:
+                        lineas_pdf.append(
+                            (numero_pagina, linea)
+                        )
+
+        patron_datos_partida = re.compile(
+            r"^(.*?)"
+            r"\b(M2|M3|ML|M|PZA|PZAS|SERVICIO|LOTE|KG|TON)\b"
+            r"\s+([\d,]+(?:\.\d+)?)"
+            r"\s+\$?\s*([\d,]+\.\d{2})"
+            r"\s+\$?\s*([\d,]+\.\d{2})$",
+            flags=re.IGNORECASE,
         )
 
-        for coincidencia in patron_partidas_obra.finditer(
-            texto_completo
-        ):
-            clave = coincidencia.group(1)
+        patron_clave = re.compile(
+            r"^\d+(?:\.\d+)+$"
+        )
 
-            descripcion = re.sub(
-                r"\s+",
-                " ",
-                coincidencia.group(2),
-            ).strip()
+        lineas_ignorar = [
+            "clave descripcion unidad cantidad",
+            "saro construcciones",
+            "www saroconstrucciones com",
+            "cliente",
+            "nombre de la empresa",
+            "proyecto",
+            "no de cotizacion",
+            "fecha monterrey",
+            "subtotal",
+            "iva",
+            "total",
+            "preliminares",
+            "banqueta",
+            "limpieza fina",
+            "banquetas exteriores",
+        ]
 
-            unidad = normalizar_unidad(
-                coincidencia.group(3)
+        acumulado_descripcion = []
+        clave_pendiente = None
+
+        for numero_pagina, linea in lineas_pdf:
+            linea_normalizada = normalizar_texto(
+                linea
             )
 
-            cantidad = convertir_numero(
-                coincidencia.group(4)
+            # Detectar claves como 1.1, 1.2 y 1.3.
+            if patron_clave.fullmatch(linea):
+                clave_pendiente = linea
+                acumulado_descripcion = []
+                continue
+
+            coincidencia = patron_datos_partida.match(
+                linea
             )
 
-            precio_unitario = convertir_numero(
-                coincidencia.group(5)
-            )
+            if coincidencia:
+                descripcion_en_linea = coincidencia.group(1).strip()
 
-            importe = convertir_numero(
-                coincidencia.group(6)
-            )
+                partes_descripcion = list(
+                    acumulado_descripcion
+                )
 
-            descripcion_normalizada = normalizar_texto(
-                descripcion
-            )
+                if descripcion_en_linea:
+                    partes_descripcion.append(
+                        descripcion_en_linea
+                    )
 
+                descripcion = re.sub(
+                    r"\s+",
+                    " ",
+                    " ".join(partes_descripcion),
+                ).strip()
+
+                unidad = normalizar_unidad(
+                    coincidencia.group(2)
+                )
+
+                cantidad = convertir_numero(
+                    coincidencia.group(3)
+                )
+
+                precio_unitario = convertir_numero(
+                    coincidencia.group(4)
+                )
+
+                importe = convertir_numero(
+                    coincidencia.group(5)
+                )
+
+                if (
+                    descripcion
+                    and precio_unitario is not None
+                    and precio_unitario > 0
+                ):
+                    filas_validas.append(
+                        {
+                            "partida": (
+                                clave_pendiente
+                                if clave_pendiente
+                                else str(len(filas_validas) + 1)
+                            ),
+                            "concepto": descripcion,
+                            "unidad": unidad,
+                            "cantidad": cantidad,
+                            "precio_unitario": precio_unitario,
+                            "importe": importe,
+                            "origen": f"Página {numero_pagina}",
+                            "fila_encabezado": None,
+                            "puntaje_deteccion": 8,
+                        }
+                    )
+
+                    paginas_detectadas.add(
+                        numero_pagina
+                    )
+
+                acumulado_descripcion = []
+                clave_pendiente = None
+                continue
+
+            # Ignorar encabezados, subtotales y datos generales.
             if any(
-                texto in descripcion_normalizada
-                for texto in [
-                    "clave descripcion unidad cantidad",
-                    "subtotal",
-                    "iva",
-                    "total",
-                    "fecha monterrey",
-                    "cliente",
-                    "nombre de la empresa",
-                    "proyecto",
-                    "cotizacion",
-                ]
+                texto in linea_normalizada
+                for texto in lineas_ignorar
             ):
                 continue
 
-            if (
-                not descripcion
-                or precio_unitario is None
-                or precio_unitario <= 0
+            # Ignorar líneas que solo contienen un monto de sección.
+            if re.fullmatch(
+                r"[A-ZÁÉÍÓÚÑ\s]+\$[\d,]+\.\d{2}",
+                linea,
+                flags=re.IGNORECASE,
             ):
                 continue
 
-            filas_validas.append(
-                {
-                    "partida": (
-                        clave
-                        if clave
-                        else str(len(filas_validas) + 1)
-                    ),
-                    "concepto": descripcion,
-                    "unidad": unidad,
-                    "cantidad": cantidad,
-                    "precio_unitario": precio_unitario,
-                    "importe": importe,
-                    "origen": "PDF - extracción por texto",
-                    "fila_encabezado": None,
-                    "puntaje_deteccion": 8,
-                }
+            acumulado_descripcion.append(
+                linea
             )
-
-        if filas_validas:
-            paginas_detectadas.add(1)
 
     if not filas_validas:
         raise ValueError(
