@@ -1134,7 +1134,7 @@ def leer_pdf(archivo):
         )
 
         patron_clave = re.compile(
-            r"^\d+(?:\.\d+)+$"
+            r"^(\d+(?:\.\d+)+)\s*(.*)$"
         )
 
         encabezados_seccion = [
@@ -1176,13 +1176,29 @@ def leer_pdf(archivo):
             )
 
             # Claves como 1.1, 1.2 y 1.3.
-            if patron_clave.fullmatch(linea):
+            # También funciona cuando la descripción
+            # comienza en la misma línea que la clave.
+            coincidencia_clave = patron_clave.match(
+                linea
+            )
 
-                clave_pendiente = linea
+            if coincidencia_clave:
+                clave_pendiente = coincidencia_clave.group(1)
                 descripcion_acumulada = []
+
+                texto_despues_clave = (
+                    coincidencia_clave.group(2).strip()
+                )
+
+                if texto_despues_clave:
+                    descripcion_acumulada.append(
+                        texto_despues_clave
+                    )
+
                 continue
 
-            # Encabezados como BANQUETA o LIMPIEZA FINA.
+            # Los encabezados de sección indican
+            # que comienza una nueva partida.
             if any(
                 linea_normalizada.startswith(encabezado)
                 for encabezado in encabezados_seccion
