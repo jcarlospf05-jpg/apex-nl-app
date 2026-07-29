@@ -1058,6 +1058,102 @@ def leer_pdf(archivo):
             )
 
             paginas_detectadas.add(1)
+if not filas_validas:
+        # Tercer intento:
+        # cotizaciones de obra con estructura:
+        # clave + descripción + unidad + cantidad + P.U. + importe
+        with pdfplumber.open(
+            io.BytesIO(contenido)
+        ) as pdf:
+            texto_completo = "\n".join(
+                pagina.extract_text() or ""
+                for pagina in pdf.pages
+            )
+
+        patron_partidas_obra = re.compile(
+            r"(?:(\d+(?:\.\d+)?)\s+)?"
+            r"(.+?)\s+"
+            r"(M2|M3|ML|M|PZA|PZAS|SERVICIO|LOTE|KG|TON)\s+"
+            r"([\d,]+(?:\.\d+)?)\s+"
+            r"\$?\s*([\d,]+\.\d{2})\s+"
+            r"\$?\s*([\d,]+\.\d{2})",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        for coincidencia in patron_partidas_obra.finditer(
+            texto_completo
+        ):
+            clave = coincidencia.group(1)
+
+            descripcion = re.sub(
+                r"\s+",
+                " ",
+                coincidencia.group(2),
+            ).strip()
+
+            unidad = normalizar_unidad(
+                coincidencia.group(3)
+            )
+
+            cantidad = convertir_numero(
+                coincidencia.group(4)
+            )
+
+            precio_unitario = convertir_numero(
+                coincidencia.group(5)
+            )
+
+            importe = convertir_numero(
+                coincidencia.group(6)
+            )
+
+            descripcion_normalizada = normalizar_texto(
+                descripcion
+            )
+
+            if any(
+                texto in descripcion_normalizada
+                for texto in [
+                    "clave descripcion unidad cantidad",
+                    "subtotal",
+                    "iva",
+                    "total",
+                    "fecha monterrey",
+                    "cliente",
+                    "nombre de la empresa",
+                    "proyecto",
+                    "cotizacion",
+                ]
+            ):
+                continue
+
+            if (
+                not descripcion
+                or precio_unitario is None
+                or precio_unitario <= 0
+            ):
+                continue
+
+            filas_validas.append(
+                {
+                    "partida": (
+                        clave
+                        if clave
+                        else str(len(filas_validas) + 1)
+                    ),
+                    "concepto": descripcion,
+                    "unidad": unidad,
+                    "cantidad": cantidad,
+                    "precio_unitario": precio_unitario,
+                    "importe": importe,
+                    "origen": "PDF - extracción por texto",
+                    "fila_encabezado": None,
+                    "puntaje_deteccion": 8,
+                }
+            )
+
+        if filas_validas:
+            paginas_detectadas.add(1)
 
     if not filas_validas:
         raise ValueError(
@@ -1069,8 +1165,7 @@ def leer_pdf(archivo):
     resultado = pd.DataFrame(
         filas_validas
     )
-
-
+   
     resultado["cantidad"] = pd.to_numeric(
         resultado["cantidad"],
         errors="coerce",
