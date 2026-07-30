@@ -902,14 +902,50 @@ def leer_pdf(archivo):
                     if len(valores) >= 8:
                         partida = valores[0]
                         concepto = valores[1]
-                        unidad = valores[2]
-                        cantidad = valores[3]
-                        precio_unitario = valores[6]
-                        importe = valores[7]
 
-                    # Formato de 6 columnas:
-                    # CLAVE | DESCRIPCIÓN | UNIDAD |
-                    # CANTIDAD | P.U. | IMPORTE
+                        valor_2_numero = convertir_numero(
+                            valores[2]
+                        )
+
+                        valor_3_normalizado = normalizar_texto(
+                            valores[3]
+                        )
+
+                        unidades_conocidas = {
+                            "m2",
+                            "m3",
+                            "ml",
+                            "m",
+                            "pza",
+                            "pzas",
+                            "kg",
+                            "ton",
+                            "lote",
+                            "servicio",
+                        }
+
+                        # Formato:
+                        # PARTIDA | DESCRIPCIÓN | CANTIDAD |
+                        # UNIDAD | $ | COSTO UNITARIO |
+                        # N$ | COSTO TOTAL
+                        if (
+                            valor_2_numero is not None
+                            and valor_3_normalizado
+                            in unidades_conocidas
+                        ):
+                            cantidad = valores[2]
+                            unidad = valores[3]
+                            precio_unitario = valores[5]
+                            importe = valores[7]
+
+                        # Formato anterior de 8 columnas.
+                        else:
+                            unidad = valores[2]
+                            cantidad = valores[3]
+                            precio_unitario = valores[6]
+                            importe = valores[7]
+
+                    # Formato de 6 columnas.
                     else:
                         partida = valores[0]
                         concepto = valores[1]
@@ -918,6 +954,7 @@ def leer_pdf(archivo):
                         precio_unitario = valores[4]
                         importe = valores[5]
 
+                    
                     partida_texto = (
                         str(partida).strip()
                         if partida is not None
