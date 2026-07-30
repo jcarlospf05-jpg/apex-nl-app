@@ -2025,11 +2025,95 @@ if archivo is not None:
 
                 buffer = io.BytesIO()
 
-                tabla.to_excel(
-                    buffer,
-                    index=False,
-                    engine="openpyxl",
+                # Crear archivo listo para Power Automate.
+                archivo_historico = pd.DataFrame(
+                    {
+                        "fecha_carga": [
+                            pd.Timestamp.now().strftime(
+                                "%d/%m/%Y"
+                            )
+                        ] * len(cotizacion),
+                        "proyecto": [
+                            proyecto.strip()
+                            if proyecto
+                            else ""
+                        ] * len(cotizacion),
+                        "proveedor": [
+                            proveedor.strip()
+                            if proveedor
+                            else ""
+                        ] * len(cotizacion),
+                        "partida": cotizacion[
+                            "partida"
+                        ].values,
+                        "concepto": cotizacion[
+                            "concepto"
+                        ].values,
+                        "unidad": cotizacion[
+                            "unidad"
+                        ].values,
+                        "cantidad": cotizacion[
+                            "cantidad"
+                        ].values,
+                        "precio_unitario": cotizacion[
+                            "precio_unitario"
+                        ].values,
+                        "importe": cotizacion[
+                            "importe"
+                        ].values,
+                        "origen": cotizacion[
+                            "origen"
+                        ].values,
+                        "cluster_id": [
+                            ""
+                        ] * len(cotizacion),
+                    }
                 )
+
+                with pd.ExcelWriter(
+                    buffer,
+                    engine="openpyxl",
+                ) as writer:
+
+                    archivo_historico.to_excel(
+                        writer,
+                        sheet_name="Cotizacion",
+                        index=False,
+                    )
+
+                    hoja = writer.book[
+                        "Cotizacion"
+                    ]
+
+                    from openpyxl.worksheet.table import (
+                        Table,
+                        TableStyleInfo,
+                    )
+
+                    ultima_fila = (
+                        len(archivo_historico) + 1
+                    )
+
+                    tabla_excel = Table(
+                        displayName="TablaCotizacion",
+                        ref=f"A1:K{ultima_fila}",
+                    )
+
+                    estilo_tabla = TableStyleInfo(
+                        name="TableStyleMedium2",
+                        showFirstColumn=False,
+                        showLastColumn=False,
+                        showRowStripes=True,
+                        showColumnStripes=False,
+                    )
+
+                    tabla_excel.tableStyleInfo = (
+                        estilo_tabla
+                    )
+
+                    hoja.add_table(
+                        tabla_excel
+                    )
 
                 nombre_proveedor = (
                     proveedor.strip()
