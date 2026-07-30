@@ -1646,12 +1646,13 @@ if archivo is not None:
         ]
 
         st.dataframe(
-            cotizacion[
-                columnas_vista
-            ].head(100),
-            use_container_width=True,
-            hide_index=True,
-        )
+    cotizacion[
+        columnas_vista
+    ].head(100),
+    use_container_width=True,
+    hide_index=True,
+    height=350,
+)
 
         if metadatos.get(
             "confianza",
