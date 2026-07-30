@@ -61,26 +61,31 @@ FUENTE = "INEGI, Indice Nacional de Precios al Consumidor (INPC): https://www.in
 #   3. Configuralo como variable de entorno INEGI_API_TOKEN, o si corres la
 #      app en Streamlit, agrega en Secrets: inegi_api_token = "tu_token"
 #
-# IMPORTANTE sobre INDICADOR_INPC_MENSUAL: es la clave del indicador "INPC,
-# Indice general, Nacional, mensual" en el Banco de Indicadores de INEGI.
-# INEGI reasigna estas claves cuando cambia el ano base del indice, asi que
-# antes de confiar en esto en produccion, VERIFICA la clave tu mismo en
-# https://www.inegi.org.mx/app/indicadores/?tm=0# buscando "Indice Nacional
-# de Precios al Consumidor" -> Indice general -> Nacional -> mensual, y
-# corre este archivo como script (ver abajo) para comparar el numero que
-# regresa contra el ultimo dato publicado que conozcas. Si no coinciden,
-# cambia INDICADOR_INPC_MENSUAL por la clave correcta antes de usarlo.
+# IMPORTANTE sobre INDICADOR_INPC_MENSUAL: es la clave del indicador "Precios
+# al Consumidor" (Indice general, Nacional, mensual) dentro del Banco de
+# Informacion Economica (BIE) de INEGI. Clave 334360, verificada a mano
+# contra https://www.inegi.org.mx/app/indicadores/?tm=3 (Banco de
+# Informacion Economica) el 29-jul-2026: el dato de 2026/06 que regresa la
+# API (145.131) coincide exacto con el boletin oficial 417/26. IMPORTANTE:
+# los indicadores de BIE necesitan la fuente "BIE-BISE" en la URL (no
+# "BISE" ni "BIE" solos), o la API regresa "No se encontraron resultados"
+# aunque el token y el indicador sean correctos -- este fue el bug que
+# causaba que la app se quedara siempre en el valor de respaldo.
+# Si INEGI reasigna esta clave en el futuro (pasa cuando cambia el ano
+# base del indice), veriflcala de nuevo ahi mismo y corre este archivo como
+# script (ver abajo) para comparar el numero que regresa contra el ultimo
+# dato publicado que conozcas.
 import json
 import os
 import time
 import urllib.error
 import urllib.request
 
-INDICADOR_INPC_MENSUAL = os.environ.get("INEGI_INDICADOR_INPC", "628194")
+INDICADOR_INPC_MENSUAL = os.environ.get("INEGI_INDICADOR_INPC", "334360")
 
 _INEGI_API_URL = (
     "https://www.inegi.org.mx/app/api/indicadores/desarrolladores/jsonxml/"
-    "INDICATOR/{indicador}/es/00/true/BISE/2.0/{token}?type=json"
+    "INDICATOR/{indicador}/es/00/true/BIE-BISE/2.0/{token}?type=json"
 )
 
 _cache_inegi = {"resultado": None, "timestamp": 0.0}
