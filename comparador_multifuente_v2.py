@@ -77,6 +77,26 @@ _PREFIJOS_SLASH = [
     (re.compile(r'\bP/'), 'PARA '),
 ]
 
+# Renglones genericos que aparecen sueltos en muchas cotizaciones (un
+# "catch-all" de mano de obra o materiales varios, sin especificar de
+# que material se trata) y que NO deben compararse contra la base de
+# precios: como no describen un material especifico, cualquier "match"
+# que el scorer encuentre para ellos es coincidencia de palabras
+# genericas (mano/obra/material/equipo...) y no significa que sea el
+# mismo concepto. Se comparan ya normalizados (mayusculas, sin acentos).
+CONCEPTOS_GENERICOS_SIN_MATERIAL = {
+    'MANO DE OBRA',
+    'MANO DE OBRA ESPECIALIZADA',
+    'MATERIALES',
+    'MATERIALES Y MANO DE OBRA',
+    'HERRAMIENTA',
+    'HERRAMIENTAS',
+    'EQUIPO',
+    'VARIOS',
+    'CONCEPTOS VARIOS',
+    'TRABAJOS VARIOS',
+}
+
 
 def _strip_accents(s: str) -> str:
     # NFKD tambien "desarma" caracteres de compatibilidad como M² -> M2 y
@@ -774,6 +794,20 @@ class ComparadorMultiFuente:
                     continue
                 row = pool.iloc[indice]
                 descripcion_referencia = row.get(text_col, "")
+                # Filtro de fragmentos demasiado cortos: cadenas de
+                # referencia como "3/8", "1/2" o "1" (medidas/fracciones
+                # sueltas que a veces quedan solas en la base de precios)
+                # pueden marcar 100% con token_set_ratio contra CUALQUIER
+                # cotizacion que mencione esa medida en cualquier parte de
+                # su descripcion larga, sin que el material sea remotamente
+                # el mismo (ej. "3/8" de una base de acero de refuerzo
+                # marcando "match perfecto" contra tuberia de cobre para
+                # refrigeracion que tambien mide 3/8"). Una referencia con
+                # menos de 8 caracteres normalizados no trae suficiente
+                # informacion como para confirmar que es el mismo concepto,
+                # sin importar que tan alto haya salido el score.
+                if len(str(descripcion_referencia).strip()) < 8:
+                    continue
                 compatible, _ = validar_compatibilidad_tecnica(
                     t,
                     descripcion_referencia,
@@ -805,6 +839,20 @@ class ComparadorMultiFuente:
             'entrada': {'descripcion': descripcion, 'unidad': u, 'precio_cotizado': precio_cotizado},
             'fuentes': {},
         }
+
+        if t.strip() in CONCEPTOS_GENERICOS_SIN_MATERIAL:
+            motivo = (
+                'esta partida no describe un material especifico (es un '
+                'renglon generico de mano de obra/materiales varios), asi '
+                'que no se compara contra la base de precios -- cualquier '
+                'coincidencia seria casualidad de palabras genericas, no '
+                'el mismo concepto.'
+            )
+            for fuente in ('nl_historico', 'cdmx_gobierno', 'ragasa_historico', 'comparacion_proveedores'):
+                resultado['fuentes'][fuente] = {'match': None, 'motivo': motivo}
+            resultado['veredicto_combinado'] = 'SIN DATOS SUFICIENTES'
+            resultado['fuentes_consultadas'] = 0
+            return resultado
 
         # --- Fuente 1: NL historico ---
         m = self._match_pool(self._nl_pools, t, u, min_score, scorer)

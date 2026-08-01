@@ -918,6 +918,24 @@ def leer_pdf(archivo):
                         precio_unitario = valores[4]
                         importe = valores[5]
 
+                    # Algunas cotizaciones (ej. proveedores que usan
+                    # PARTIDA|DESCRIPTION|CANTIDAD|UNIDAD|...) traen las
+                    # columnas CANTIDAD y UNIDAD en el orden contrario al
+                    # que asumimos arriba. En vez de adivinar el orden por
+                    # posición fija, se detecta por el CONTENIDO: la
+                    # columna "cantidad" siempre debe poder leerse como
+                    # número (1.00, 53.70...) y "unidad" nunca (PIEZA,
+                    # METROS...). Si están al revés, se intercambian antes
+                    # de seguir procesando. Esto evita que un documento con
+                    # el orden invertido termine con cantidad=None y
+                    # unidad="1.00" (y por lo tanto pierda esas partidas
+                    # frente a los otros métodos de lectura).
+                    if (
+                        convertir_numero(cantidad) is None
+                        and convertir_numero(unidad) is not None
+                    ):
+                        cantidad, unidad = unidad, cantidad
+
                     partida_texto = (
                         str(partida).strip()
                         if partida is not None
@@ -1268,8 +1286,293 @@ def leer_pdf(archivo):
             linea
         )
 
-    # Conservar el método que encuentre más partidas.
-    if len(filas_obra) > len(filas_tabla):
+    # ======================================================
+    # CUARTO INTENTO: COTIZACIONES ESTILO ODOO/ZOHO/FACTURAMA
+    # (cantidad y unidad juntas, con "IVA(XX%)" en medio del renglón)
+    # ======================================================
+    # Formato muy comun en cotizaciones que llegan de proveedores reales
+    # (ej. "SUMINISTRO DE TEE ... 4.00 Pieza 462.00 IVA(16%) $ 1,848.00"):
+    # no hay columna de "Unidad" separada (va pegada a la cantidad), el
+    # orden es cantidad->unidad->precio->impuesto->importe (al reves de
+    # "TERCER INTENTO", que espera unidad->cantidad), la unidad es una
+    # palabra completa como "Pieza" (no una abreviatura de una lista
+    # fija), y casi siempre hay una linea "ENTREGA: X SEMANAS" pegada
+    # despues de cada renglon que hay que ignorar para que no se cuele
+    # en la descripcion del siguiente renglon.
+    #
+    # Las lineas de encabezado/pie de pagina (razon social, direccion,
+    # RFC, telefono, "Pagina X / Y", etc.) se repiten IDENTICAS en cada
+    # pagina del PDF -- en vez de tratar de adivinar el nombre de cada
+    # proveedor, se detectan automaticamente como cualquier linea que
+    # aparezca en TODAS las paginas.
+    #
+    # IMPORTANTE: el umbral debe ser "en todas las paginas", no solo
+    # "en 2 o mas". Con productos similares (ej. varios cuples/reducciones
+    # con la misma norma) es comun que dos renglones DISTINTOS compartan
+    # una especificacion identica como "S/C BE, B16.25, C 40, A420 WPL6,
+    # ANSI B16.9" -- eso puede repetirse en 2 paginas sin ser encabezado,
+    # y si se ignora se pierde contenido real de la descripcion.
+    total_paginas_pdf = len(
+        {numero_pagina for numero_pagina, _ in lineas_pdf}
+    )
+    paginas_por_linea = {}
+    for numero_pagina, linea in lineas_pdf:
+        paginas_por_linea.setdefault(linea, set()).add(numero_pagina)
+    lineas_repetidas_en_paginas = {
+        linea
+        for linea, paginas in paginas_por_linea.items()
+        if total_paginas_pdf >= 2 and len(paginas) >= total_paginas_pdf
+    }
+
+    patrones_ruido_factura = [
+        re.compile(r"^RFC\s*:", re.IGNORECASE),
+        re.compile(r"P[aá]gina\s+\d+\s*/\s*\d+", re.IGNORECASE),
+        re.compile(r"^N[uú]mero de cotizaci[oó]n", re.IGNORECASE),
+        re.compile(r"^Direcci[oó]n de (facturaci[oó]n|env[ií]o)", re.IGNORECASE),
+        re.compile(r"^ENTREGA\s*:", re.IGNORECASE),
+        re.compile(r"^T[eé]rminos\s+(y\s+condiciones|de\s+pago)", re.IGNORECASE),
+        re.compile(r"^Subtotal\b", re.IGNORECASE),
+        # Renglon de TOTALES de IVA (sin parentesis), distinto del
+        # token "IVA(16%)" que va DENTRO de cada renglon de partida.
+        re.compile(r"^IVA\s+\d{1,2}\s*%", re.IGNORECASE),
+        re.compile(r"^Total\s*\$", re.IGNORECASE),
+        re.compile(r"[\w.\-]+@[\w.\-]+\.\w+"),
+        re.compile(r"https?://\S+"),
+        re.compile(r"^\+?\d[\d\s]{8,}\d"),
+        # Linea de encabezado de la tabla en si.
+        re.compile(
+            r"^Descripci[oó]n\s+Cantidad\s+Precio\s+unitario",
+            re.IGNORECASE,
+        ),
+        # Fecha suelta (dd/mm/aaaa), tipica debajo de "Fecha de
+        # cotizacion"/"Vencimiento" cuando la etiqueta y el valor
+        # vienen en lineas separadas.
+        re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}\s*$"),
+    ]
+
+    # Etiquetas cuyo VALOR viene en el renglon de abajo (no en la misma
+    # linea), asi que hay que saltarse tambien esa siguiente linea -
+    # ej. "Vendedor" seguido de "Javier Vega" en la linea de abajo. Sin
+    # esto, el nombre del vendedor se cuela en la descripcion de la
+    # siguiente partida real.
+    patrones_etiqueta_valor_abajo = [
+        re.compile(r"^Fecha de cotizaci[oó]n\s*$", re.IGNORECASE),
+        re.compile(r"^Vencimiento\s*$", re.IGNORECASE),
+        re.compile(r"^Vendedor\s*$", re.IGNORECASE),
+    ]
+
+    patron_fila_servicio = re.compile(
+        r"^(.*?)"
+        r"\b(\d+(?:[.,]\d+)?)\s+"
+        r"([A-Za-zÁÉÍÓÚáéíóúÑñ]{2,20})\s+"
+        r"\$?\s*([\d,]+\.\d{2})\s+"
+        r"(?:IVA\s*\(\s*\d{1,2}\s*%\s*\)\s+)?"
+        r"\$?\s*([\d,]+\.\d{2})\s*$",
+        flags=re.IGNORECASE,
+    )
+
+    filas_odoo = []
+    descripcion_acumulada = []
+    saltar_siguiente_linea = False
+    # En PDFs tipo Odoo, cuando la descripcion es larga el sobrante NO
+    # queda ANTES de la linea con los numeros, sino DESPUES (el motor de
+    # layout del PDF "recorta" la descripcion en la columna y el resto
+    # cae en la siguiente linea, antes del "ENTREGA: ..."). Ejemplo real:
+    #   'SUMINISTRO DE TEE REDUCC. SOLD. CED-40 DE 1-1/4" 4.00 Pieza
+    #    462.00 IVA(16%) $ 1,848.00'
+    #   'X 1/2" ASTM A-234 WPB'          <- esto sigue siendo la MISMA
+    #                                       partida, no la siguiente.
+    #   'ENTREGA: 2 A 3 SEMANAS'
+    # Esta bandera indica "la ultima linea cerro un renglon con numeros;
+    # si la siguiente linea no es ruido ni un renglon nuevo, es el
+    # sobrante de la descripcion de ESE renglon, hay que pegarlo ahi".
+    esperando_continuacion_descripcion = False
+
+    for numero_pagina, linea in lineas_pdf:
+
+        if saltar_siguiente_linea:
+            saltar_siguiente_linea = False
+            esperando_continuacion_descripcion = False
+            continue
+
+        if linea in lineas_repetidas_en_paginas:
+            descripcion_acumulada = []
+            esperando_continuacion_descripcion = False
+            continue
+
+        if any(
+            patron.search(linea)
+            for patron in patrones_etiqueta_valor_abajo
+        ):
+            descripcion_acumulada = []
+            esperando_continuacion_descripcion = False
+            saltar_siguiente_linea = True
+            continue
+
+        if any(
+            patron.search(linea)
+            for patron in patrones_ruido_factura
+        ):
+            descripcion_acumulada = []
+            esperando_continuacion_descripcion = False
+            continue
+
+        coincidencia = patron_fila_servicio.match(linea)
+
+        if coincidencia:
+            descripcion_en_linea = coincidencia.group(1).strip()
+
+            partes = list(descripcion_acumulada)
+            if descripcion_en_linea:
+                partes.append(descripcion_en_linea)
+
+            descripcion = re.sub(
+                r"\s+", " ", " ".join(partes)
+            ).strip()
+
+            cantidad = convertir_numero(coincidencia.group(2))
+            unidad = normalizar_unidad(coincidencia.group(3))
+            precio_unitario = convertir_numero(coincidencia.group(4))
+            importe = convertir_numero(coincidencia.group(5))
+
+            if (
+                descripcion
+                and precio_unitario is not None
+                and precio_unitario > 0
+            ):
+                filas_odoo.append(
+                    {
+                        "partida": str(len(filas_odoo) + 1),
+                        "concepto": descripcion,
+                        "unidad": unidad,
+                        "cantidad": cantidad,
+                        "precio_unitario": precio_unitario,
+                        "importe": importe,
+                        "origen": f"Página {numero_pagina}",
+                        "fila_encabezado": None,
+                        "puntaje_deteccion": 8,
+                    }
+                )
+                paginas_detectadas.add(numero_pagina)
+                esperando_continuacion_descripcion = True
+            else:
+                esperando_continuacion_descripcion = False
+
+            descripcion_acumulada = []
+            continue
+
+        if esperando_continuacion_descripcion and filas_odoo:
+            filas_odoo[-1]["concepto"] = re.sub(
+                r"\s+",
+                " ",
+                f"{filas_odoo[-1]['concepto']} {linea}",
+            ).strip()
+            esperando_continuacion_descripcion = False
+            continue
+
+        descripcion_acumulada.append(linea)
+
+    # Para decidir cuál de los 3 métodos (tabla con bordes, obra
+    # multilínea, facturas estilo Odoo) usar, primero se intenta contra
+    # el SUBTOTAL declarado en el PDF -- comparar la suma de importes de
+    # cada método contra ese número es mucho más confiable que solo
+    # contar renglones, porque un método puede "ganar" por tener más
+    # filas pero con datos rotos o mal alineados (columnas de una tabla
+    # leídas en el orden equivocado, texto de factura cortado mal,
+    # etc.). Ojo: se compara contra el Subtotal (antes de impuestos), NO
+    # el Total, porque cada importe de renglón ya viene sin IVA.
+    #
+    # El PDF a veces trae el número del subtotal con un espacio suelto
+    # en medio (ej. "$ 5 72,088.24" en vez de "$ 572,088.24" -- artefacto
+    # de cómo el PDF codifica ese texto), así que el patrón permite
+    # espacios/tabs sueltos dentro del número (pero no saltos de línea,
+    # para no cruzarse con la línea del IVA que le sigue).
+    coincidencia_subtotal = re.search(
+        r"Subtotal[ \t]*\$?[ \t]*(\d[\d,\t ]*\.\d{2})",
+        texto_para_detectar_formato,
+        flags=re.IGNORECASE,
+    )
+    subtotal_declarado = (
+        convertir_numero(coincidencia_subtotal.group(1))
+        if coincidencia_subtotal
+        else None
+    )
+
+    def _suma_importes(filas):
+        total = 0.0
+        for f in filas:
+            importe = convertir_numero(f.get("importe"))
+            if importe is None:
+                cantidad = convertir_numero(f.get("cantidad"))
+                precio = convertir_numero(f.get("precio_unitario"))
+                if cantidad is not None and precio is not None:
+                    importe = cantidad * precio
+                else:
+                    importe = 0.0
+            total += importe
+        return total
+
+    metodo_por_subtotal = None
+    if subtotal_declarado:
+        mejor_diferencia = None
+        for nombre, filas in (
+            ("tabla", filas_tabla),
+            ("obra", filas_obra),
+            ("odoo", filas_odoo),
+        ):
+            if not filas:
+                continue
+            diferencia = abs(_suma_importes(filas) - subtotal_declarado)
+            if mejor_diferencia is None or diferencia < mejor_diferencia:
+                mejor_diferencia = diferencia
+                metodo_por_subtotal = nombre
+        # Tolerancia de $1 (redondeos de centavos). Si ni el que más se
+        # acerca cuadra de verdad, no forzar esta señal: mejor caer al
+        # criterio de respaldo de abajo.
+        if mejor_diferencia is None or mejor_diferencia >= 1.0:
+            metodo_por_subtotal = None
+
+    # IMPORTANTE: el subtotal por sí solo NO basta para decidir. Un método
+    # de texto (TERCER/CUARTO INTENTO) puede sumar exactamente el
+    # subtotal correcto renglón por renglón (los números de cada línea se
+    # leen bien) pero con las DESCRIPCIONES desfasadas una posición
+    # (porque el texto de una celda que ocupa varias líneas se agrupó con
+    # el renglón de números equivocado) -- en ese caso el resultado
+    # "cuadra" en dinero pero cada partida queda con el texto de otra, lo
+    # cual es inútil para buscar coincidencias en la base de precios. Por
+    # eso primero se prioriza la extracción de tabla real (PRIMER
+    # INTENTO, basada en las líneas de borde que trae el PDF), que
+    # respeta la celda de descripción de cada renglón tal cual está en el
+    # documento y no depende de heurísticas de texto: si encontró un
+    # número de renglones razonable frente a los otros métodos (>=90%) Y
+    # su suma no se aleja mucho del subtotal (dentro de 2%, para tolerar
+    # como mucho 1-2 renglones que la tabla no haya podido leer por un
+    # salto de página), se usa esa. Solo si la tabla no es confiable se
+    # cae al criterio de subtotal exacto entre los métodos de texto, y si
+    # tampoco hay subtotal, al conteo de renglones.
+    max_otros = max(len(filas_obra), len(filas_odoo))
+    tabla_confiable = False
+    if filas_tabla and len(filas_tabla) >= max_otros * 0.9:
+        if subtotal_declarado:
+            diferencia_relativa = (
+                abs(_suma_importes(filas_tabla) - subtotal_declarado)
+                / subtotal_declarado
+            )
+            tabla_confiable = diferencia_relativa <= 0.02
+        else:
+            tabla_confiable = True
+
+    if tabla_confiable:
+        filas_validas = filas_tabla
+    elif metodo_por_subtotal == "tabla":
+        filas_validas = filas_tabla
+    elif metodo_por_subtotal == "obra":
+        filas_validas = filas_obra
+    elif metodo_por_subtotal == "odoo":
+        filas_validas = filas_odoo
+    elif len(filas_odoo) > len(filas_obra) and len(filas_odoo) > len(filas_tabla):
+        filas_validas = filas_odoo
+    elif len(filas_obra) > len(filas_tabla):
         filas_validas = filas_obra
     else:
         filas_validas = filas_tabla
@@ -1344,6 +1647,36 @@ def leer_pdf(archivo):
             95 if len(resultado) > 0 else 0
         ),
     }
+
+    # Verificación contra el SUBTOTAL del PDF (no el Total), reutilizando
+    # el valor ya extraído arriba para decidir el método. El importe de
+    # cada renglón es antes de impuestos -- el "IVA(16%)" que aparece
+    # junto a cada partida es solo la tasa aplicable, no un monto ya
+    # sumado al importe de esa fila -- así que la suma de todos los
+    # importes debe cuadrar con el Subtotal de la cotización, NO con el
+    # Total (que ya trae el IVA sumado). Comparar contra el Total aquí
+    # daría una diferencia falsa del ~16% y haría parecer que la lectura
+    # del PDF falló cuando en realidad está correcta.
+    if subtotal_declarado:
+        suma_importes = float(
+            resultado["importe"].sum()
+        )
+
+        diferencia = abs(
+            suma_importes - subtotal_declarado
+        )
+
+        metadatos["subtotal_declarado"] = subtotal_declarado
+        metadatos["suma_importes_detectados"] = round(
+            suma_importes, 2
+        )
+        # Tolerancia de $1: redondeos de centavos entre renglones.
+        metadatos["coincide_con_subtotal"] = diferencia < 1.0
+
+        if diferencia < 1.0:
+            metadatos["confianza"] = max(
+                metadatos["confianza"], 98
+            )
 
     return resultado, metadatos
 
@@ -1625,6 +1958,27 @@ if archivo is not None:
                 "La confianza de lectura es baja. "
                 "Revisa la vista previa antes de continuar."
             )
+
+        if "coincide_con_subtotal" in metadatos:
+
+            if metadatos["coincide_con_subtotal"]:
+
+                st.caption(
+                    "✅ La suma de los renglones detectados "
+                    "coincide con el Subtotal del documento "
+                    f"(${metadatos['subtotal_declarado']:,.2f})."
+                )
+
+            else:
+
+                st.warning(
+                    "La suma de los renglones detectados "
+                    f"(${metadatos['suma_importes_detectados']:,.2f}) "
+                    "no coincide con el Subtotal del documento "
+                    f"(${metadatos['subtotal_declarado']:,.2f}). "
+                    "Puede faltar o sobrar alguna partida: revisa la "
+                    "vista previa."
+                )
 
         confirmar = st.checkbox(
             "Confirmo que las partidas detectadas son correctas",
