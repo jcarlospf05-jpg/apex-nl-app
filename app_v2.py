@@ -902,50 +902,14 @@ def leer_pdf(archivo):
                     if len(valores) >= 8:
                         partida = valores[0]
                         concepto = valores[1]
+                        unidad = valores[2]
+                        cantidad = valores[3]
+                        precio_unitario = valores[6]
+                        importe = valores[7]
 
-                        valor_2_numero = convertir_numero(
-                            valores[2]
-                        )
-
-                        valor_3_normalizado = normalizar_texto(
-                            valores[3]
-                        )
-
-                        unidades_conocidas = {
-                            "m2",
-                            "m3",
-                            "ml",
-                            "m",
-                            "pza",
-                            "pzas",
-                            "kg",
-                            "ton",
-                            "lote",
-                            "servicio",
-                        }
-
-                        # Formato:
-                        # PARTIDA | DESCRIPCIÓN | CANTIDAD |
-                        # UNIDAD | $ | COSTO UNITARIO |
-                        # N$ | COSTO TOTAL
-                        if (
-                            valor_2_numero is not None
-                            and valor_3_normalizado
-                            in unidades_conocidas
-                        ):
-                            cantidad = valores[2]
-                            unidad = valores[3]
-                            precio_unitario = valores[5]
-                            importe = valores[7]
-
-                        # Formato anterior de 8 columnas.
-                        else:
-                            unidad = valores[2]
-                            cantidad = valores[3]
-                            precio_unitario = valores[6]
-                            importe = valores[7]
-
-                    # Formato de 6 columnas.
+                    # Formato de 6 columnas:
+                    # CLAVE | DESCRIPCIÓN | UNIDAD |
+                    # CANTIDAD | P.U. | IMPORTE
                     else:
                         partida = valores[0]
                         concepto = valores[1]
@@ -954,7 +918,6 @@ def leer_pdf(archivo):
                         precio_unitario = valores[4]
                         importe = valores[5]
 
-                    
                     partida_texto = (
                         str(partida).strip()
                         if partida is not None
@@ -1646,13 +1609,12 @@ if archivo is not None:
         ]
 
         st.dataframe(
-    cotizacion[
-        columnas_vista
-    ].head(100),
-    use_container_width=True,
-    hide_index=True,
-    height=350,
-)
+            cotizacion[
+                columnas_vista
+            ].head(100),
+            use_container_width=True,
+            hide_index=True,
+        )
 
         if metadatos.get(
             "confianza",
@@ -1744,6 +1706,9 @@ if archivo is not None:
                         "Match NL": nl.get(
                             "match"
                         ),
+                        "Confianza NL": nl.get(
+                            "confianza"
+                        ),
                         "Año del dato NL": nl.get(
                             "anio_dato_mas_reciente"
                         ),
@@ -1764,6 +1729,9 @@ if archivo is not None:
                         ),
                         "Match CDMX": cdmx.get(
                             "match"
+                        ),
+                        "Confianza CDMX": cdmx.get(
+                            "confianza"
                         ),
                         (
                             "Precio referencia CDMX"
@@ -1807,6 +1775,12 @@ if archivo is not None:
                             ] = consulta_historico[
                                 "match"
                             ]
+
+                            fila[
+                                "Confianza histórico interno"
+                            ] = consulta_historico.get(
+                                "confianza"
+                            )
 
                             fila[
                                 "Proveedores en histórico"
@@ -2026,95 +2000,11 @@ if archivo is not None:
 
                 buffer = io.BytesIO()
 
-                # Crear archivo listo para Power Automate.
-                archivo_historico = pd.DataFrame(
-                    {
-                        "fecha_carga": [
-                            pd.Timestamp.now().strftime(
-                                "%d/%m/%Y"
-                            )
-                        ] * len(cotizacion),
-                        "proyecto": [
-                            proyecto.strip()
-                            if proyecto
-                            else ""
-                        ] * len(cotizacion),
-                        "proveedor": [
-                            proveedor.strip()
-                            if proveedor
-                            else ""
-                        ] * len(cotizacion),
-                        "partida": cotizacion[
-                            "partida"
-                        ].values,
-                        "concepto": cotizacion[
-                            "concepto"
-                        ].values,
-                        "unidad": cotizacion[
-                            "unidad"
-                        ].values,
-                        "cantidad": cotizacion[
-                            "cantidad"
-                        ].values,
-                        "precio_unitario": cotizacion[
-                            "precio_unitario"
-                        ].values,
-                        "importe": cotizacion[
-                            "importe"
-                        ].values,
-                        "origen": cotizacion[
-                            "origen"
-                        ].values,
-                        "cluster_id": [
-                            ""
-                        ] * len(cotizacion),
-                    }
-                )
-
-                with pd.ExcelWriter(
+                tabla.to_excel(
                     buffer,
+                    index=False,
                     engine="openpyxl",
-                ) as writer:
-
-                    archivo_historico.to_excel(
-                        writer,
-                        sheet_name="Cotizacion",
-                        index=False,
-                    )
-
-                    hoja = writer.book[
-                        "Cotizacion"
-                    ]
-
-                    from openpyxl.worksheet.table import (
-                        Table,
-                        TableStyleInfo,
-                    )
-
-                    ultima_fila = (
-                        len(archivo_historico) + 1
-                    )
-
-                    tabla_excel = Table(
-                        displayName="TablaCotizacion",
-                        ref=f"A1:K{ultima_fila}",
-                    )
-
-                    estilo_tabla = TableStyleInfo(
-                        name="TableStyleMedium2",
-                        showFirstColumn=False,
-                        showLastColumn=False,
-                        showRowStripes=True,
-                        showColumnStripes=False,
-                    )
-
-                    tabla_excel.tableStyleInfo = (
-                        estilo_tabla
-                    )
-
-                    hoja.add_table(
-                        tabla_excel
-                    )
+                )
 
                 nombre_proveedor = (
                     proveedor.strip()

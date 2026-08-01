@@ -29,13 +29,29 @@ La Google Sheet debe:
 """
 
 import re
-import unicodedata
 from datetime import datetime
 
 import gspread
 import pandas as pd
 from google.oauth2.service_account import Credentials
-from rapidfuzz import fuzz, process
+from rapidfuzz import process
+
+# Se reutiliza la MISMA normalizacion de texto/unidades y el mismo scorer
+# combinado que usa comparador_multifuente_v2.py (en vez de mantener una
+# copia separada aqui). Antes este archivo tenia su propia version de
+# normalize_text/normalize_unit sin el arreglo de sinonimos de unidad
+# (PZA/PIEZA/PZ/UN, ML/M/MTS/METRO, M2/M², etc.) ni la expansion de
+# abreviaturas ("SUM"->"SUMINISTRO"...), asi que el historico interno de
+# Ragasa sufria el mismo problema de "no encuentra coincidencias" que las
+# fuentes NL/CDMX. Tener una sola copia evita que se vuelvan a desincronizar.
+from comparador_multifuente_v2 import (
+    normalize_text,
+    normalize_unit,
+    score_combinado,
+    nivel_confianza,
+    UMBRAL_CONFIANZA_BAJA,
+)
+from rapidfuzz import fuzz  # se sigue usando fuzz.token_set_ratio en _homologar_uno
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -45,29 +61,7 @@ SCOPES = [
 COLUMNAS = ['fecha_carga', 'proyecto', 'proveedor', 'concepto', 'concepto_norm',
             'unidad', 'unidad_norm', 'precio_unitario', 'cluster_id']
 
-LEADING_CODE_RE = re.compile(r'^\s*[\d.]{1,15}\s+')
-WS_RE = re.compile(r'\s+')
 NUM_RE = re.compile(r'\d+(?:\.\d+)?')
-
-
-def _strip_accents(s: str) -> str:
-    return ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
-
-
-def normalize_text(raw: str) -> str:
-    if not isinstance(raw, str):
-        return ''
-    t = raw.strip()
-    t = LEADING_CODE_RE.sub('', t)
-    t = _strip_accents(t.upper())
-    t = re.sub(r'[^A-Z0-9%./\-\s]', ' ', t)
-    return WS_RE.sub(' ', t).strip()
-
-
-def normalize_unit(u: str) -> str:
-    if not isinstance(u, str) or not u.strip():
-        return 'SIN_UNIDAD'
-    return u.strip().upper().replace('.', '')
 
 
 def numeric_signature(t: str):
@@ -185,7 +179,7 @@ class HistoricoGoogleSheets:
         return nuevo[COLUMNAS]
 
     def consultar(self, descripcion: str, unidad: str, precio_cotizado: float = None,
-                  min_score: float = 70.0) -> dict:
+                  min_score: float = 78.0) -> dict:
         t = normalize_text(descripcion)
         u = normalize_unit(unidad)
         pool = self.df[self.df['unidad_norm'] == u]
@@ -193,21 +187,38 @@ class HistoricoGoogleSheets:
             return {'match': None, 'motivo': f'historico vacio o sin unidad {u} todavia'}
 
         choices = pool['concepto_norm'].tolist()
-        result = process.extractOne(t, choices, scorer=fuzz.token_set_ratio, score_cutoff=min_score)
+        result = process.extractOne(t, choices, scorer=score_combinado, score_cutoff=min_score)
+        confianza = None
+        if result is None and min_score > UMBRAL_CONFIANZA_BAJA:
+            # Segunda pasada con umbral relajado: mejor ofrecer una
+            # referencia debil marcada "revisar" que ninguna.
+            result = process.extractOne(
+                t, choices, scorer=score_combinado, score_cutoff=UMBRAL_CONFIANZA_BAJA
+            )
+            confianza = 'BAJA' if result is not None else None
         if result is None:
-            return {'match': None, 'motivo': f'sin coincidencia >= {min_score}% en el historico'}
+            return {'match': None, 'motivo': f'sin coincidencia ni relajada en el historico (unidad {u})'}
         _, score, idx = result
+        if confianza is None:
+            confianza = nivel_confianza(float(score))
         cid = pool.iloc[idx]['cluster_id']
         grupo = self.df[self.df['cluster_id'] == cid]
 
         out = {
             'match': grupo['concepto'].mode().iloc[0], 'score': round(float(score), 1),
+            'confianza': confianza,
             'n_registros': len(grupo), 'n_proveedores': grupo['proveedor'].nunique(),
             'proveedores': sorted(grupo['proveedor'].unique().tolist()),
             'precio_min': float(grupo['precio_unitario'].min()),
             'precio_mediana': float(grupo['precio_unitario'].median()),
             'precio_max': float(grupo['precio_unitario'].max()),
         }
+        if confianza == 'BAJA':
+            out['motivo'] = (
+                'coincidencia debil (revisar a mano): el texto no es muy '
+                'parecido, confirma que sea el mismo concepto antes de '
+                'confiar en este precio de referencia.'
+            )
         if precio_cotizado is not None and len(grupo) >= 2:
             low, high = grupo['precio_unitario'].quantile(0.25), grupo['precio_unitario'].quantile(0.75)
             out['clasificacion'] = clasificar(precio_cotizado, low, high)

@@ -42,9 +42,54 @@ from ajuste_inflacion import factor_ajuste, ajustar_precio, FUENTE as FUENTE_INP
 LEADING_CODE_RE = re.compile(r'^\s*[\d.]{1,15}\s+')
 WS_RE = re.compile(r'\s+')
 
+# Abreviaturas comunes en cotizaciones/licitaciones de CAPEX en Mexico.
+# Se expanden a su forma completa ANTES de comparar texto, para que
+# "SUM E INST DE..." y "SUMINISTRO E INSTALACION DE..." puntuen igual de
+# bien que si estuvieran escritas exactamente igual. Se aplica por token
+# completo (no substrings), asi que es seguro agregar mas entradas aqui
+# sin miedo a corromper palabras que ya son correctas.
+ABREVIATURAS_DESCRIPCION = {
+    'SUM': 'SUMINISTRO', 'SUMIN': 'SUMINISTRO', 'SUMINIST': 'SUMINISTRO',
+    'INST': 'INSTALACION', 'INSTAL': 'INSTALACION', 'INSTALAC': 'INSTALACION',
+    'COL': 'COLOCACION', 'COLOC': 'COLOCACION',
+    'TRANSP': 'TRANSPORTE',
+    'INC': 'INCLUYE', 'INCL': 'INCLUYE', 'INCLUY': 'INCLUYE',
+    'DEMOL': 'DEMOLICION',
+    'EXC': 'EXCAVACION', 'EXCAV': 'EXCAVACION',
+    'CONC': 'CONCRETO',
+    'ACAB': 'ACABADO',
+    'ELEC': 'ELECTRICO', 'ELECT': 'ELECTRICO',
+    'ESTRUC': 'ESTRUCTURA', 'ESTR': 'ESTRUCTURA',
+    'MOT': 'MOTOR',
+    'MTO': 'MANTENIMIENTO',
+    'IMPERM': 'IMPERMEABILIZACION',
+    'PREF': 'PREFABRICADO',
+    'GALV': 'GALVANIZADO',
+}
+
+# Prefijos tipo "C/", "S/", "P/" (con/sin/para) que aparecen pegados a la
+# siguiente palabra en muchas cotizaciones ("C/CUÑA", "S/ANDAMIO"). Se
+# expanden con regex de limite de palabra ANTES de quitar signos, porque
+# el filtro de caracteres de normalize_text conserva la diagonal.
+_PREFIJOS_SLASH = [
+    (re.compile(r'\bC/'), 'CON '),
+    (re.compile(r'\bS/'), 'SIN '),
+    (re.compile(r'\bP/'), 'PARA '),
+]
+
 
 def _strip_accents(s: str) -> str:
+    # NFKD tambien "desarma" caracteres de compatibilidad como M² -> M2 y
+    # M³ -> M3, ademas de quitar acentos. Por eso se usa tanto en texto
+    # como en unidades: sin esto, "M2" y "M²" nunca hacian match aunque
+    # fueran exactamente la misma unidad.
     return ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
+
+
+def _expandir_abreviaturas(texto: str) -> str:
+    tokens = texto.split(' ')
+    tokens = [ABREVIATURAS_DESCRIPCION.get(tok, tok) for tok in tokens]
+    return ' '.join(tokens)
 
 
 def normalize_text(raw: str) -> str:
@@ -53,14 +98,58 @@ def normalize_text(raw: str) -> str:
     t = raw.strip()
     t = LEADING_CODE_RE.sub('', t)
     t = _strip_accents(t.upper())
+    for patron, reemplazo in _PREFIJOS_SLASH:
+        t = patron.sub(reemplazo, t)
     t = re.sub(r'[^A-Z0-9%./\-\s]', ' ', t)
-    return WS_RE.sub(' ', t).strip()
+    t = WS_RE.sub(' ', t).strip()
+    return _expandir_abreviaturas(t)
+
+
+# Unidades equivalentes que en las bases reales aparecen escritas de
+# formas distintas para la MISMA unidad fisica (confirmado revisando
+# Base_Precios_Unitarios_Nuevo_Leon_REAL.xlsx: "pieza" aparece como PZA,
+# PZ, PZAS, PZS, PIEZA, PIEZAS, PIESZA (typo) y UN por separado; "metro
+# lineal" aparece como M, ML, MTS, MT, METRO, METROS y MI). Como el
+# comparador exige unidad identica antes de comparar texto, esta
+# fragmentacion hacia que miles de renglones nunca se cruzaran entre si
+# aunque fueran el mismo material. Las llaves y valores ya deben venir en
+# mayusculas/sin acentos (se aplica despues de _strip_accents).
+UNIDAD_CANONICA = {
+    # pieza
+    'PZA': 'PZA', 'PZ': 'PZA', 'PZAS': 'PZA', 'PZS': 'PZA',
+    'PIEZA': 'PZA', 'PIEZAS': 'PZA', 'PIESZA': 'PZA',
+    'UN': 'PZA', 'UNIDAD': 'PZA', 'UNIDADES': 'PZA',
+    # metro lineal (distinto de M2/M3, que ya se resuelven solos porque
+    # _strip_accents convierte M² -> M2 y M³ -> M3)
+    'M': 'ML', 'ML': 'ML', 'MTS': 'ML', 'MT': 'ML', 'MI': 'ML',
+    'METRO': 'ML', 'METROS': 'ML', 'MTSL': 'ML', 'MTL': 'ML', 'MTO': 'ML',
+    # peso
+    'KG': 'KG', 'KGS': 'KG', 'KILOGRAMO': 'KG', 'KILOGRAMOS': 'KG', 'KILO': 'KG',
+    'TON': 'TON', 'TONS': 'TON', 'TONELADA': 'TON', 'TONELADAS': 'TON',
+    # volumen
+    'L': 'LT', 'LT': 'LT', 'LTS': 'LT', 'LITRO': 'LT', 'LITROS': 'LT',
+    # conjuntos
+    'JGO': 'JGO', 'JUEGO': 'JGO', 'JUEGOS': 'JGO',
+    'LOTE': 'LOTE', 'LOTES': 'LOTE',
+    'GLOBAL': 'GLOBAL', 'GLB': 'GLOBAL', 'GL': 'GLOBAL',
+    'KIT': 'KIT', 'KITS': 'KIT',
+    # otros abreviados comunes en la base real
+    'TRAMO': 'TRAMO', 'TMO': 'TRAMO',
+    'BOBINA': 'BOBINA', 'BOB': 'BOBINA',
+    'SERVICIO': 'SERVICIO', 'SERV': 'SERVICIO',
+    'ESTUDIO': 'ESTUDIO', 'EST': 'ESTUDIO',
+    'ROLLO': 'ROLLO', 'ROLLOS': 'ROLLO',
+    'VIAJE': 'VIAJE', 'VIAJES': 'VIAJE',
+    'JORNAL': 'JORNAL', 'JOR': 'JORNAL',
+}
 
 
 def normalize_unit(u: str) -> str:
     if not isinstance(u, str) or not u.strip():
         return 'SIN_UNIDAD'
-    return u.strip().upper().replace('.', '')
+    t = _strip_accents(u.strip().upper()).replace('.', '')
+    t = WS_RE.sub(' ', t).strip()
+    return UNIDAD_CANONICA.get(t, t)
 
 
 def extraer_amperaje(texto: str):
@@ -213,6 +302,43 @@ def detectar_familia_producto(texto: str):
             "LIMPIEZA",
             "ASEO",
         ],
+        # Familias de obra civil. Se agregaron porque al hacer el
+        # matching de texto mas flexible (scorer combinado + sinonimos de
+        # unidad) crecio el riesgo de que, por ejemplo, "acero de refuerzo
+        # en LOSAS" hiciera match con "acero de refuerzo en MUROS": el
+        # texto es casi identico salvo el elemento estructural, y antes de
+        # este cambio no habia ninguna validacion que lo detectara (la
+        # unica familia de compatibilidad tecnica que existia era para
+        # materiales electricos).
+        "concreto": [
+            "CONCRETO",
+            "HORMIGON",
+        ],
+        "acero_refuerzo": [
+            "ACERO DE REFUERZO",
+            "VARILLA CORRUGADA",
+            "VARILLA",
+        ],
+        "excavacion": [
+            "EXCAVACION",
+        ],
+        "piso": [
+            "PISO",
+            "PORCELANATO",
+            "PORCELANICO",
+            "LOSETA",
+            "AZULEJO",
+        ],
+        "pintura": [
+            "PINTURA",
+        ],
+        "impermeabilizacion": [
+            "IMPERMEABIL",
+        ],
+        "tablaroca": [
+            "TABLAROCA",
+            "DRYWALL",
+        ],
     }
     for familia, palabras in familias.items():
         for palabra in palabras:
@@ -269,6 +395,32 @@ def detectar_subtipo_caja(texto: str):
         return "CHALUPA"
     if "GALVANIZ" in texto:
         return "CAJA_GALVANIZADA"
+    return None
+
+
+def detectar_elemento_estructural(texto: str):
+    """Para las familias 'concreto' y 'acero_refuerzo': en que elemento
+    estructural va el material (losa, muro, zapata, columna, trabe/viga,
+    cimentacion, castillo, dala, banqueta/guarnicion). Sin esto, "acero de
+    refuerzo en LOSAS" y "acero de refuerzo en MUROS" son textualmente
+    casi identicos y el matching por similitud los confundiria."""
+    texto = normalize_text(texto)
+    elementos = {
+        "LOSA": ["LOSA"],
+        "MURO": ["MURO"],
+        "ZAPATA": ["ZAPATA"],
+        "COLUMNA": ["COLUMNA"],
+        "TRABE_VIGA": ["TRABE", "VIGA"],
+        "CIMENTACION": ["CIMENTACION", "CIMIENTO"],
+        "CASTILLO": ["CASTILLO"],
+        "DALA": ["DALA"],
+        "BANQUETA_GUARNICION": ["BANQUETA", "GUARNICION"],
+        "PISO_FIRME": ["FIRME", "PISO"],
+    }
+    for elemento, palabras in elementos.items():
+        for palabra in palabras:
+            if palabra in texto:
+                return elemento
     return None
 
 
@@ -379,6 +531,26 @@ def validar_compatibilidad_tecnica(
                 f"subtipo de tubería diferente o no identificado: "
                 f"{subtipo_entrada} vs {subtipo_referencia}",
             )
+    # Validación específica para concreto y acero de refuerzo: deben ser
+    # del mismo elemento estructural (losa, muro, zapata, columna, etc.)
+    # cuando se pueda identificar en ambos textos.
+    if familia_entrada in ("concreto", "acero_refuerzo"):
+        elemento_entrada = detectar_elemento_estructural(
+            descripcion_entrada
+        )
+        elemento_referencia = detectar_elemento_estructural(
+            descripcion_referencia
+        )
+        if (
+            elemento_entrada is not None
+            and elemento_referencia is not None
+            and elemento_referencia != elemento_entrada
+        ):
+            return (
+                False,
+                f"elemento estructural diferente: "
+                f"{elemento_entrada} vs {elemento_referencia}",
+            )
     # Validación específica para cajas y registros.
     if familia_entrada == "caja_electrica":
         subtipo_entrada = detectar_subtipo_caja(
@@ -472,6 +644,35 @@ def clasificar(precio: float, low: float, high: float) -> str:
     return 'EN MERCADO'
 
 
+def score_combinado(s1, s2, *, processor=None, score_cutoff=None):
+    """Scorer compuesto: en vez de depender de un solo algoritmo de
+    similitud, calcula tres y se queda con el mejor. Esto ayuda cuando la
+    cotizacion trae las palabras en otro orden, le faltan palabras que la
+    base si tiene (o al reves), o solo coincide un fragmento largo. Un
+    solo scorer (ej. token_set_ratio) falla distinto en cada uno de esos
+    casos; combinarlos sube el recall sin bajar el umbral a ciegas."""
+    a = processor(s1) if processor else s1
+    b = processor(s2) if processor else s2
+    return max(
+        fuzz.token_set_ratio(a, b),
+        fuzz.token_sort_ratio(a, b),
+        fuzz.partial_token_sort_ratio(a, b),
+    )
+
+
+UMBRAL_CONFIANZA_ALTA = 90.0
+UMBRAL_CONFIANZA_MEDIA = 78.0
+UMBRAL_CONFIANZA_BAJA = 60.0  # piso absoluto: por debajo de esto no se ofrece nada
+
+
+def nivel_confianza(score: float) -> str:
+    if score >= UMBRAL_CONFIANZA_ALTA:
+        return 'ALTA'
+    if score >= UMBRAL_CONFIANZA_MEDIA:
+        return 'MEDIA'
+    return 'BAJA'
+
+
 class ComparadorMultiFuente:
     def __init__(self, excel_path: str):
         self.nl = pd.read_excel(excel_path, sheet_name='Tabulador Homologado NL')
@@ -522,38 +723,81 @@ class ComparadorMultiFuente:
         scorer,
         text_col='concepto_norm',
     ):
+        """Busca la mejor coincidencia dentro del pool de la unidad `u`.
+
+        Hace dos pasadas: primero con `min_score` (coincidencia
+        confiable), y si no encuentra nada, reintenta con un umbral mas
+        bajo (UMBRAL_CONFIANZA_BAJA) para no dejar la partida totalmente
+        sin dato solo porque la redaccion es muy distinta. La segunda
+        pasada siempre se marca con nivel de confianza 'BAJA' para que
+        quien revise sepa que debe confirmarla a mano; nunca se mezcla en
+        silencio con las coincidencias fuertes.
+
+        Regresa (score, row, nivel_confianza) o None si ni siquiera al
+        umbral minimo hay algo tecnicamente compatible.
+        """
         pool = pools.get(u)
         if pool is None or pool.empty:
             return None
         choices = pool[
             text_col
         ].fillna("").tolist()
-        candidatos = process.extract(
-            t,
-            choices,
-            scorer=scorer,
-            score_cutoff=min_score,
-            limit=25,
-        )
-        if not candidatos:
-            return None
-        for _, score, indice in candidatos:
-            row = pool.iloc[indice]
-            descripcion_referencia = row.get(
-                text_col,
-                "",
-            )
-            compatible, _ = validar_compatibilidad_tecnica(
+
+        def _buscar(umbral):
+            # Paso 1: preseleccion rapida con el scorer nativo de rapidfuzz
+            # (implementado en C, corre sobre miles de filas en
+            # milisegundos). Paso 2: el scorer combinado -mas lento por
+            # ser Python puro, ya que corre 3 algoritmos- solo se aplica
+            # sobre ese shortlist corto. Esto evita que comparar una
+            # cotizacion con muchos renglones se sienta lento, sin perder
+            # el beneficio del scorer combinado: si el texto real es
+            # parecido, ya va a aparecer en la preseleccion (el propio
+            # token_set_ratio es uno de los tres que se combinan despues).
+            preseleccion = process.extract(
                 t,
-                descripcion_referencia,
+                choices,
+                scorer=fuzz.token_set_ratio,
+                score_cutoff=max(umbral - 25, 30),
+                limit=40,
             )
-            if not compatible:
-                continue
-            return float(score), row
+            if not preseleccion:
+                return None
+            recalificados = sorted(
+                (
+                    (scorer(t, texto_candidato), indice)
+                    for texto_candidato, _, indice in preseleccion
+                ),
+                key=lambda par: -par[0],
+            )
+            for score, indice in recalificados:
+                if score < umbral:
+                    continue
+                row = pool.iloc[indice]
+                descripcion_referencia = row.get(text_col, "")
+                compatible, _ = validar_compatibilidad_tecnica(
+                    t,
+                    descripcion_referencia,
+                )
+                if not compatible:
+                    continue
+                return float(score), row
+            return None
+
+        resultado = _buscar(min_score)
+        if resultado:
+            score, row = resultado
+            return score, row, nivel_confianza(score)
+
+        if min_score > UMBRAL_CONFIANZA_BAJA:
+            resultado = _buscar(UMBRAL_CONFIANZA_BAJA)
+            if resultado:
+                score, row = resultado
+                return score, row, 'BAJA'
+
         return None
 
     def evaluar(self, descripcion: str, unidad: str, precio_cotizado: float,
-                min_score: float = 78.0, scorer=fuzz.token_set_ratio,
+                min_score: float = UMBRAL_CONFIANZA_MEDIA, scorer=score_combinado,
                 ajustar_inflacion: bool = True) -> dict:
         t = normalize_text(descripcion)
         u = normalize_unit(unidad)
@@ -565,7 +809,7 @@ class ComparadorMultiFuente:
         # --- Fuente 1: NL historico ---
         m = self._match_pool(self._nl_pools, t, u, min_score, scorer)
         if m:
-            score, row = m
+            score, row, confianza = m
             anio_dato = str(row['fecha_max'])[:4]
             factor = factor_ajuste(anio_dato) if ajustar_inflacion else 1.0
             p25_uso = ajustar_precio(row['precio_p25'], anio_dato) if ajustar_inflacion else float(row['precio_p25'])
@@ -573,6 +817,7 @@ class ComparadorMultiFuente:
             veredicto = clasificar(precio_cotizado, p25_uso, p75_uso)
             resultado['fuentes']['nl_historico'] = {
                 'match': row['concepto_homologado'], 'score': round(score, 1),
+                'confianza': confianza,
                 'precio_min': float(row['precio_min']), 'precio_p25': float(row['precio_p25']),
                 'precio_mediana': float(row['precio_mediana']), 'precio_p75': float(row['precio_p75']),
                 'precio_max': float(row['precio_max']), 'n_registros': int(row['n_registros']),
@@ -585,31 +830,45 @@ class ComparadorMultiFuente:
                 'referencia_ajuste': f'INPC INEGI, {anio_dato} -> {_inflacion.ETIQUETA_ACTUAL} ({FUENTE_INPC})' if ajustar_inflacion else None,
                 'clasificacion': veredicto,
             }
+            if confianza == 'BAJA':
+                resultado['fuentes']['nl_historico']['motivo'] = (
+                    'coincidencia debil (revisar a mano): el texto no es muy '
+                    'parecido, confirma que sea el mismo concepto antes de '
+                    'confiar en este precio de referencia.'
+                )
         else:
-            resultado['fuentes']['nl_historico'] = {'match': None, 'motivo': f'sin coincidencia >= {min_score}% en unidad {u}'}
+            resultado['fuentes']['nl_historico'] = {'match': None, 'motivo': f'sin coincidencia ni relajada en unidad {u}'}
 
         # --- Fuente 2: CDMX gobierno ---
         m = self._match_pool(self._cdmx_pools, t, u, min_score, scorer)
         if m:
-            score, row = m
+            score, row, confianza = m
             precio_ref = float(row['precio_unitario'])
             low, high = precio_ref * 0.85, precio_ref * 1.15
             resultado['fuentes']['cdmx_gobierno'] = {
                 'match': row['concepto'], 'score': round(score, 1), 'clave': row['clave'],
+                'confianza': confianza,
                 'precio_referencia': precio_ref, 'banda_baja': round(low, 2), 'banda_alta': round(high, 2),
                 'clasificacion': clasificar(precio_cotizado, low, high),
             }
+            if confianza == 'BAJA':
+                resultado['fuentes']['cdmx_gobierno']['motivo'] = (
+                    'coincidencia debil (revisar a mano): el texto no es muy '
+                    'parecido, confirma que sea el mismo concepto antes de '
+                    'confiar en este precio de referencia.'
+                )
         else:
-            resultado['fuentes']['cdmx_gobierno'] = {'match': None, 'motivo': f'sin coincidencia >= {min_score}% en unidad {u}'}
+            resultado['fuentes']['cdmx_gobierno'] = {'match': None, 'motivo': f'sin coincidencia ni relajada en unidad {u}'}
 
         # --- Fuente 3: Ragasa (requiere datos reales del usuario) ---
         if self.ragasa is not None:
             pools = {uu: dfx for uu, dfx in self.ragasa.groupby('unidad_norm')}
             m = self._match_pool(pools, t, u, min_score, scorer)
             if m:
-                score, row = m
+                score, row, confianza = m
                 resultado['fuentes']['ragasa_historico'] = {
                     'match': row['concepto'], 'score': round(score, 1),
+                    'confianza': confianza,
                     'precio_historico': float(row['precio_unitario']),
                     'clasificacion': clasificar(precio_cotizado, row['precio_unitario'] * 0.9, row['precio_unitario'] * 1.1),
                 }
