@@ -6,3 +6,4 @@ pdfplumber
 gspread
 google-auth
 rapidfuzz
+anthropic

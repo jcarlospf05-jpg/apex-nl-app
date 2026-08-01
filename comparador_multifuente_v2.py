@@ -34,6 +34,7 @@ from rapidfuzz import fuzz, process
 
 import ajuste_inflacion as _inflacion
 from ajuste_inflacion import factor_ajuste, ajustar_precio, FUENTE as FUENTE_INPC
+import revision_ia as _revision_ia
 # Nota: ETIQUETA_ACTUAL se lee como _inflacion.ETIQUETA_ACTUAL (no se importa
 # el nombre suelto) porque refrescar_nivel_actual() lo actualiza en tiempo de
 # ejecucion; si se importara como valor suelto aqui, este modulo se quedaria
@@ -832,7 +833,7 @@ class ComparadorMultiFuente:
 
     def evaluar(self, descripcion: str, unidad: str, precio_cotizado: float,
                 min_score: float = UMBRAL_CONFIANZA_MEDIA, scorer=score_combinado,
-                ajustar_inflacion: bool = True) -> dict:
+                ajustar_inflacion: bool = True, usar_ia: bool = False) -> dict:
         t = normalize_text(descripcion)
         u = normalize_unit(unidad)
         resultado = {
@@ -884,6 +885,13 @@ class ComparadorMultiFuente:
                     'parecido, confirma que sea el mismo concepto antes de '
                     'confiar en este precio de referencia.'
                 )
+                if usar_ia:
+                    veredicto_ia = _revision_ia.revisar_coincidencia_debil(
+                        descripcion, u, row['concepto_homologado'],
+                        fuente='historico de Nuevo Leon',
+                    )
+                    if veredicto_ia:
+                        resultado['fuentes']['nl_historico']['revision_ia'] = veredicto_ia
         else:
             resultado['fuentes']['nl_historico'] = {'match': None, 'motivo': f'sin coincidencia ni relajada en unidad {u}'}
 
@@ -905,6 +913,13 @@ class ComparadorMultiFuente:
                     'parecido, confirma que sea el mismo concepto antes de '
                     'confiar en este precio de referencia.'
                 )
+                if usar_ia:
+                    veredicto_ia = _revision_ia.revisar_coincidencia_debil(
+                        descripcion, u, row['concepto'],
+                        fuente='Tabulador CDMX (gobierno)',
+                    )
+                    if veredicto_ia:
+                        resultado['fuentes']['cdmx_gobierno']['revision_ia'] = veredicto_ia
         else:
             resultado['fuentes']['cdmx_gobierno'] = {'match': None, 'motivo': f'sin coincidencia ni relajada en unidad {u}'}
 
@@ -920,6 +935,13 @@ class ComparadorMultiFuente:
                     'precio_historico': float(row['precio_unitario']),
                     'clasificacion': clasificar(precio_cotizado, row['precio_unitario'] * 0.9, row['precio_unitario'] * 1.1),
                 }
+                if confianza == 'BAJA' and usar_ia:
+                    veredicto_ia = _revision_ia.revisar_coincidencia_debil(
+                        descripcion, u, row['concepto'],
+                        fuente='historico interno de Ragasa',
+                    )
+                    if veredicto_ia:
+                        resultado['fuentes']['ragasa_historico']['revision_ia'] = veredicto_ia
             else:
                 resultado['fuentes']['ragasa_historico'] = {'match': None, 'motivo': 'sin coincidencia en historico Ragasa'}
         else:
@@ -962,6 +984,13 @@ class ComparadorMultiFuente:
         else:
             resultado['veredicto_combinado'] = 'SIN DATOS SUFICIENTES'
             resultado['fuentes_consultadas'] = 0
+
+            if usar_ia:
+                opinion_ia = _revision_ia.opinar_sin_datos(
+                    descripcion, u, precio_cotizado,
+                )
+                if opinion_ia:
+                    resultado['opinion_ia_sin_datos'] = opinion_ia
 
         return resultado
 

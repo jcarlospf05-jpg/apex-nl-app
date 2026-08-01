@@ -41,6 +41,7 @@ import streamlit as st
 
 from comparador_multifuente_v2 import ComparadorMultiFuente
 import ajuste_inflacion
+import revision_ia
 
 
 # ==========================================================
@@ -111,6 +112,13 @@ def cargar_historico():
 
 comparador = cargar_comparador()
 historico = cargar_historico()
+
+# Revisa una sola vez si hay una API key de Anthropic configurada
+# (Secrets: anthropic_api_key, o variable de entorno ANTHROPIC_API_KEY).
+# Si no hay, la casilla de "Activar revisión con IA" en la barra
+# lateral se muestra deshabilitada y la app sigue funcionando normal
+# sin esta capa opcional.
+ia_disponible = revision_ia.ia_disponible()
 
 # Intenta traer el dato mas reciente del INPC directo de la API de INEGI.
 # Si no hay token configurado (Secrets: inegi_api_token) o falla la
@@ -1753,6 +1761,27 @@ with st.sidebar:
         ),
     )
 
+    usar_ia = st.checkbox(
+        "Activar revisión con IA (segunda opinión)",
+        value=ia_disponible,
+        disabled=not ia_disponible,
+        help=(
+            "Para coincidencias de confianza BAJA, le pide a Claude "
+            "que confirme si de verdad es el mismo material. Para "
+            "partidas sin ningún dato de referencia, da una opinión "
+            "orientativa (NO un precio verificado) sobre si el precio "
+            "cotizado suena razonable. Requiere una API key de "
+            "Anthropic configurada en Secrets."
+        ),
+    )
+
+    if not ia_disponible:
+
+        st.caption(
+            "Revisión con IA no conectada. Falta configurar "
+            "anthropic_api_key en Secrets."
+        )
+
     if historico is None:
 
         st.caption(
@@ -2027,6 +2056,7 @@ if archivo is not None:
                         ajustar_inflacion=(
                             ajustar_inflacion
                         ),
+                        usar_ia=usar_ia,
                     )
 
                     nl = resultado[
@@ -2096,6 +2126,27 @@ if archivo is not None:
                             "clasificacion"
                         ),
                     }
+
+                    revision_ia_nl = nl.get("revision_ia")
+                    if revision_ia_nl:
+                        fila["Revisión IA (match NL débil)"] = (
+                            f"{revision_ia_nl['veredicto']}: "
+                            f"{revision_ia_nl['razon']}"
+                        )
+
+                    revision_ia_cdmx = cdmx.get("revision_ia")
+                    if revision_ia_cdmx:
+                        fila["Revisión IA (match CDMX débil)"] = (
+                            f"{revision_ia_cdmx['veredicto']}: "
+                            f"{revision_ia_cdmx['razon']}"
+                        )
+
+                    opinion_ia = resultado.get("opinion_ia_sin_datos")
+                    if opinion_ia:
+                        fila["Opinión IA (sin datos verificados)"] = (
+                            f"{opinion_ia['opinion']}: "
+                            f"{opinion_ia['razon']}"
+                        )
 
                     clasificaciones = [
                         valor
