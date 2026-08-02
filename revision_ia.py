@@ -42,9 +42,27 @@ sigue funcionando normal, solo sin esta capa extra.
 """
 import json
 import os
+import time
 
 MODELO_GEMINI_POR_DEFECTO = "gemini-3.5-flash-lite"
 MODELO_OPENAI_POR_DEFECTO = "gpt-5-mini"
+
+# En cotizaciones grandes se hacen muchas llamadas seguidas a la IA (una
+# por cada match de confianza BAJA). El nivel gratuito de Gemini/OpenAI
+# tiene un limite de solicitudes por minuto -- sin este reintento, en
+# cuanto se topa ese limite a la mitad del lote, todas las llamadas
+# restantes fallan silenciosamente y esos matches dudosos se quedan sin
+# revisar (se ven identicos a uno ya confirmado, pero nadie los revisó).
+_REINTENTOS_POR_RATE_LIMIT = 3
+_ESPERA_BASE_SEGUNDOS = 3
+
+
+def _es_error_rate_limit(excepcion) -> bool:
+    texto = str(excepcion).lower()
+    return any(
+        pista in texto
+        for pista in ("429", "rate limit", "rate_limit", "quota", "resource_exhausted", "resource exhausted", "too many requests")
+    )
 
 _proveedor_cache = {"proveedor": None, "cliente": None, "intentado": False}
 
@@ -107,18 +125,24 @@ def ia_disponible(api_key=None) -> bool:
 
 
 def _llamar_gemini(cliente, prompt, modelo, max_tokens):
-    try:
-        respuesta = cliente.models.generate_content(
-            model=modelo,
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-                "max_output_tokens": max_tokens,
-            },
-        )
-        return respuesta.text
-    except Exception:
-        pass
+    ultimo_error = None
+    for intento in range(_REINTENTOS_POR_RATE_LIMIT):
+        try:
+            respuesta = cliente.models.generate_content(
+                model=modelo,
+                contents=prompt,
+                config={
+                    "response_mime_type": "application/json",
+                    "max_output_tokens": max_tokens,
+                },
+            )
+            return respuesta.text
+        except Exception as error:
+            ultimo_error = error
+            if _es_error_rate_limit(error) and intento < _REINTENTOS_POR_RATE_LIMIT - 1:
+                time.sleep(_ESPERA_BASE_SEGUNDOS * (intento + 1))
+                continue
+            break
 
     try:
         respuesta = cliente.models.generate_content(
@@ -131,16 +155,20 @@ def _llamar_gemini(cliente, prompt, modelo, max_tokens):
 
 
 def _llamar_openai(cliente, prompt, modelo, max_tokens):
-    try:
-        respuesta = cliente.chat.completions.create(
-            model=modelo,
-            max_completion_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        return respuesta.choices[0].message.content
-    except Exception:
-        pass
+    for intento in range(_REINTENTOS_POR_RATE_LIMIT):
+        try:
+            respuesta = cliente.chat.completions.create(
+                model=modelo,
+                max_completion_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            return respuesta.choices[0].message.content
+        except Exception as error:
+            if _es_error_rate_limit(error) and intento < _REINTENTOS_POR_RATE_LIMIT - 1:
+                time.sleep(_ESPERA_BASE_SEGUNDOS * (intento + 1))
+                continue
+            break
 
     try:
         respuesta = cliente.chat.completions.create(
@@ -154,6 +182,11 @@ def _llamar_openai(cliente, prompt, modelo, max_tokens):
 
 
 def _llamar_ia(proveedor, cliente, prompt, modelo=None, max_tokens=250):
+    # Pequeña pausa antes de cada llamada para repartir las solicitudes
+    # en el tiempo y no disparar el limite por minuto del nivel gratuito
+    # cuando una cotizacion tiene muchos matches BAJA seguidos.
+    time.sleep(1)
+
     if proveedor == "gemini":
         modelo = modelo or MODELO_GEMINI_POR_DEFECTO
         return _llamar_gemini(cliente, prompt, modelo, max_tokens), modelo
