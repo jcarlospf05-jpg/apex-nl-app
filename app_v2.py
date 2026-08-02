@@ -2215,6 +2215,7 @@ if archivo is not None:
                                 concepto,
                                 unidad,
                                 precio,
+                                usar_ia=usar_ia,
                             )
                         )
 
@@ -2249,14 +2250,51 @@ if archivo is not None:
                                 "precio_mediana"
                             )
 
-                            fila[
-                                "Veredicto histórico"
-                            ] = consulta_historico.get(
-                                "clasificacion"
+                            veredicto_historico = (
+                                consulta_historico.get(
+                                    "clasificacion"
+                                )
                             )
 
-                            if consulta_historico.get(
-                                "clasificacion"
+                            revision_ia_historico = (
+                                consulta_historico.get(
+                                    "revision_ia"
+                                )
+                            )
+
+                            if revision_ia_historico:
+                                fila[
+                                    "Revisión IA (match histórico débil)"
+                                ] = (
+                                    f"{revision_ia_historico['veredicto']}: "
+                                    f"{revision_ia_historico['razon']}"
+                                )
+
+                            historico_rechazado_por_ia = (
+                                revision_ia_historico
+                                and revision_ia_historico.get(
+                                    "veredicto"
+                                ) == "RECHAZA"
+                            )
+
+                            if (
+                                historico_rechazado_por_ia
+                                and veredicto_historico
+                            ):
+                                veredicto_historico = (
+                                    f"{veredicto_historico} "
+                                    "(descartado: la IA rechazó el match)"
+                                )
+
+                            fila[
+                                "Veredicto histórico"
+                            ] = veredicto_historico
+
+                            if (
+                                consulta_historico.get(
+                                    "clasificacion"
+                                )
+                                and not historico_rechazado_por_ia
                             ):
 
                                 clasificaciones.append(

@@ -50,8 +50,10 @@ from comparador_multifuente_v2 import (
     score_combinado,
     nivel_confianza,
     UMBRAL_CONFIANZA_BAJA,
+    es_diferencia_extrema,
 )
 from rapidfuzz import fuzz  # se sigue usando fuzz.token_set_ratio en _homologar_uno
+import revision_ia as _revision_ia
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -179,7 +181,7 @@ class HistoricoGoogleSheets:
         return nuevo[COLUMNAS]
 
     def consultar(self, descripcion: str, unidad: str, precio_cotizado: float = None,
-                  min_score: float = 78.0) -> dict:
+                  min_score: float = 78.0, usar_ia: bool = False) -> dict:
         t = normalize_text(descripcion)
         u = normalize_unit(unidad)
         pool = self.df[self.df['unidad_norm'] == u]
@@ -213,18 +215,40 @@ class HistoricoGoogleSheets:
             'precio_mediana': float(grupo['precio_unitario'].median()),
             'precio_max': float(grupo['precio_unitario'].max()),
         }
-        if confianza == 'BAJA':
-            out['motivo'] = (
-                'coincidencia debil (revisar a mano): el texto no es muy '
-                'parecido, confirma que sea el mismo concepto antes de '
-                'confiar en este precio de referencia.'
-            )
         if precio_cotizado is not None and len(grupo) >= 2:
             low, high = grupo['precio_unitario'].quantile(0.25), grupo['precio_unitario'].quantile(0.75)
             out['clasificacion'] = clasificar(precio_cotizado, low, high)
         elif precio_cotizado is not None:
             out['clasificacion'] = None
             out['nota'] = 'solo 1 registro historico: referencia puntual, no banda estadistica'
+
+        diferencia_extrema = (
+            precio_cotizado is not None
+            and es_diferencia_extrema(precio_cotizado, out['precio_mediana'])
+        )
+
+        if confianza == 'BAJA':
+            out['motivo'] = (
+                'coincidencia debil (revisar a mano): el texto no es muy '
+                'parecido, confirma que sea el mismo concepto antes de '
+                'confiar en este precio de referencia.'
+            )
+        elif diferencia_extrema:
+            out['motivo'] = (
+                'precio muy alejado de la referencia (revisar a mano): '
+                'el texto coincide bien, pero el precio esta a una '
+                'distancia inusual -- confirma que sea el mismo producto, '
+                'tamano y calibre antes de confiar en esta clasificacion.'
+            )
+
+        if (confianza == 'BAJA' or diferencia_extrema) and usar_ia:
+            veredicto_ia = _revision_ia.revisar_coincidencia_debil(
+                descripcion, u, out['match'],
+                fuente='historico interno guardado en Google Sheets',
+            )
+            if veredicto_ia:
+                out['revision_ia'] = veredicto_ia
+
         return out
 
     def resumen(self) -> dict:
