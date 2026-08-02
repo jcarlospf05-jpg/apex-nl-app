@@ -334,6 +334,154 @@ def opinar_sin_datos(
     }
 
 
+# Tamano de lote para las funciones "_lote": en vez de una llamada a la
+# IA por cada partida dudosa (lento, y facil que se acabe el limite de
+# solicitudes por minuto del nivel gratuito), se agrupan varias en un
+# solo prompt y se pide un JSON con un resultado por cada una. Una
+# cotizacion de 30 partidas con 20 matches dudosos pasa de ~20 llamadas
+# a ~3, y de 2-4 minutos a unos 15-20 segundos.
+TAMANO_LOTE = 8
+
+
+def revisar_coincidencias_debiles_lote(items, api_key=None, modelo=None):
+    """
+    Version en lote de revisar_coincidencia_debil(): revisa varios
+    matches dudosos en una sola llamada a la IA.
+
+    items: lista de dicts con las claves:
+        id (cualquier identificador unico, ej. un indice),
+        descripcion_cotizada, unidad, descripcion_candidato, fuente
+
+    Regresa dict {id: {'veredicto':..., 'razon':..., 'modelo':...}} --
+    solo incluye los ids que la IA logro responder. Si la llamada
+    completa falla, regresa {} (diccionario vacio, no None, para que
+    quien llama pueda seguir iterando sin checar por None).
+    """
+    proveedor, cliente = _obtener_cliente(api_key)
+    if cliente is None or not items:
+        return {}
+
+    lineas = []
+    for it in items:
+        lineas.append(
+            f'ID {it["id"]}: partida cotizada = "{it["descripcion_cotizada"]}" '
+            f'(unidad: {it["unidad"]}). Candidato encontrado en {it["fuente"]} = '
+            f'"{it["descripcion_candidato"]}".'
+        )
+
+    prompt = (
+        "Eres un experto en materiales y precios de construccion/obra "
+        "en Mexico (civil, electrico, mecanico/HVAC, plomeria, "
+        "acabados).\n\n"
+        "Un sistema de busqueda por texto encontro estas posibles "
+        "coincidencias, pero con confianza BAJA o con un precio muy "
+        "alejado de lo esperado (el texto se parece pero no es seguro "
+        "que sea el mismo material, o el precio no cuadra con ese "
+        "candidato). Para CADA una, decide si de verdad es el MISMO "
+        "concepto/material, no solo texto parecido:\n\n"
+        + "\n".join(lineas) +
+        "\n\nResponde SOLO con un JSON (sin texto alrededor) con este "
+        "formato exacto, un objeto por cada ID de la lista:\n"
+        '{"resultados": [{"id": <mismo id de arriba>, "veredicto": '
+        '"CONFIRMA" o "RECHAZA" o "NO_SEGURO", "razon": "explicacion '
+        'breve en espanol, maximo 20 palabras"}, ...]}\n\n'
+        "CONFIRMA solo si estas genuinamente seguro de que es el "
+        "mismo material/servicio (aunque este redactado distinto). "
+        "RECHAZA si son materiales o servicios distintos aunque "
+        "compartan palabras o medidas sueltas. NO_SEGURO si de "
+        "verdad no se puede saber con la informacion dada."
+    )
+
+    max_tokens = min(4000, 150 + 120 * len(items))
+    texto, modelo_usado = _llamar_ia(proveedor, cliente, prompt, modelo=modelo, max_tokens=max_tokens)
+    datos = _extraer_json(texto)
+    if not datos or "resultados" not in datos or not isinstance(datos["resultados"], list):
+        return {}
+
+    salida = {}
+    for r in datos["resultados"]:
+        if not isinstance(r, dict) or "id" not in r:
+            continue
+        id_ = r["id"]
+        veredicto = str(r.get("veredicto", "")).strip().upper()
+        if veredicto not in {"CONFIRMA", "RECHAZA", "NO_SEGURO"}:
+            veredicto = "NO_SEGURO"
+        salida[id_] = {
+            "veredicto": veredicto,
+            "razon": str(r.get("razon", "")).strip(),
+            "modelo": f"{proveedor}:{modelo_usado}",
+        }
+    return salida
+
+
+def opinar_sin_datos_lote(items, api_key=None, modelo=None):
+    """
+    Version en lote de opinar_sin_datos(): da una opinion orientativa
+    para varias partidas sin ningun dato de referencia, en una sola
+    llamada a la IA.
+
+    items: lista de dicts con las claves:
+        id, descripcion_cotizada, unidad, precio_cotizado
+
+    Regresa dict {id: {'opinion':..., 'razon':..., 'modelo':...}} --
+    solo incluye los ids que la IA logro responder.
+    """
+    proveedor, cliente = _obtener_cliente(api_key)
+    if cliente is None or not items:
+        return {}
+
+    lineas = []
+    for it in items:
+        lineas.append(
+            f'ID {it["id"]}: "{it["descripcion_cotizada"]}" (unidad: '
+            f'{it["unidad"]}), precio unitario cotizado: '
+            f'${it["precio_cotizado"]:,.2f} MXN'
+        )
+
+    prompt = (
+        "Eres un experto en materiales, equipo y precios de "
+        "construccion/obra/instalaciones en Mexico (civil, "
+        "electrico, mecanico/HVAC, plomeria, acabados), con "
+        "conocimiento de precios de mercado aproximados en pesos "
+        "mexicanos (MXN) a mediados de 2026.\n\n"
+        "Estas partidas NO tienen ninguna referencia en las bases de "
+        "precios internas de la empresa (Nuevo Leon, CDMX, historico "
+        "interno) -- por eso se te pide tu opinion general de cada "
+        "una, sabiendo que NO es un dato verificado:\n\n"
+        + "\n".join(lineas) +
+        "\n\nResponde SOLO con un JSON (sin texto alrededor) con este "
+        "formato exacto, un objeto por cada ID de la lista:\n"
+        '{"resultados": [{"id": <mismo id de arriba>, "opinion": '
+        '"RAZONABLE" o "ALTO" o "BAJO" o "NO_PUEDO_OPINAR", "razon": '
+        '"explicacion breve en espanol, maximo 25 palabras, menciona '
+        'un rango aproximado si puedes"}, ...]}\n\n'
+        "Usa NO_PUEDO_OPINAR si el material/equipo es demasiado "
+        "especifico (marca, modelo, capacidad exacta) como para dar "
+        "una opinion responsable sin mas contexto."
+    )
+
+    max_tokens = min(4000, 150 + 130 * len(items))
+    texto, modelo_usado = _llamar_ia(proveedor, cliente, prompt, modelo=modelo, max_tokens=max_tokens)
+    datos = _extraer_json(texto)
+    if not datos or "resultados" not in datos or not isinstance(datos["resultados"], list):
+        return {}
+
+    salida = {}
+    for r in datos["resultados"]:
+        if not isinstance(r, dict) or "id" not in r:
+            continue
+        id_ = r["id"]
+        opinion = str(r.get("opinion", "")).strip().upper()
+        if opinion not in {"RAZONABLE", "ALTO", "BAJO", "NO_PUEDO_OPINAR"}:
+            opinion = "NO_PUEDO_OPINAR"
+        salida[id_] = {
+            "opinion": opinion,
+            "razon": str(r.get("razon", "")).strip(),
+            "modelo": f"{proveedor}:{modelo_usado}",
+        }
+    return salida
+
+
 def debe_descartarse(fuente: dict, usar_ia: bool):
     """
     Decide si un match que el comparador ya marco como riesgoso

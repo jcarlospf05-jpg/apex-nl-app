@@ -916,13 +916,13 @@ class ComparadorMultiFuente:
                     'clasificacion.'
                 )
 
-            if (confianza == 'BAJA' or diferencia_extrema_nl) and usar_ia:
-                veredicto_ia = _revision_ia.revisar_coincidencia_debil(
-                    descripcion, u, row['concepto_homologado'],
-                    fuente='historico de Nuevo Leon',
-                )
-                if veredicto_ia:
-                    resultado['fuentes']['nl_historico']['revision_ia'] = veredicto_ia
+            # OJO: aqui YA NO se llama a la IA una partida a la vez -- eso
+            # se hace en LOTE desde app_v2.py (ver revision_ia.
+            # revisar_coincidencias_debiles_lote) despues de evaluar TODAS
+            # las partidas de la cotizacion, para no tardar minutos ni
+            # agotar el limite de solicitudes por minuto. Aqui solo se deja
+            # marcado 'motivo' (arriba) para que quien orquesta sepa que
+            # este match necesita revision.
         else:
             resultado['fuentes']['nl_historico'] = {'match': None, 'motivo': f'sin coincidencia ni relajada en unidad {u}'}
 
@@ -955,13 +955,8 @@ class ComparadorMultiFuente:
                     'clasificacion.'
                 )
 
-            if (confianza == 'BAJA' or diferencia_extrema_cdmx) and usar_ia:
-                veredicto_ia = _revision_ia.revisar_coincidencia_debil(
-                    descripcion, u, row['concepto'],
-                    fuente='Tabulador CDMX (gobierno)',
-                )
-                if veredicto_ia:
-                    resultado['fuentes']['cdmx_gobierno']['revision_ia'] = veredicto_ia
+            # Igual que en NL: la revision con IA de este match se hace en
+            # LOTE desde app_v2.py, no aqui.
         else:
             resultado['fuentes']['cdmx_gobierno'] = {'match': None, 'motivo': f'sin coincidencia ni relajada en unidad {u}'}
 
@@ -979,13 +974,13 @@ class ComparadorMultiFuente:
                     'clasificacion': clasificar(precio_cotizado, precio_hist_ragasa * 0.9, precio_hist_ragasa * 1.1),
                 }
                 diferencia_extrema_ragasa = es_diferencia_extrema(precio_cotizado, precio_hist_ragasa)
-                if (confianza == 'BAJA' or diferencia_extrema_ragasa) and usar_ia:
-                    veredicto_ia = _revision_ia.revisar_coincidencia_debil(
-                        descripcion, u, row['concepto'],
-                        fuente='historico interno de Ragasa',
+                if confianza == 'BAJA' or diferencia_extrema_ragasa:
+                    resultado['fuentes']['ragasa_historico']['motivo'] = (
+                        'coincidencia riesgosa (revisar a mano): confianza '
+                        'baja o precio muy alejado de la referencia.'
                     )
-                    if veredicto_ia:
-                        resultado['fuentes']['ragasa_historico']['revision_ia'] = veredicto_ia
+                # La revision con IA de este match (si aplica) se hace en
+                # LOTE desde app_v2.py, no aqui.
             else:
                 resultado['fuentes']['ragasa_historico'] = {'match': None, 'motivo': 'sin coincidencia en historico Ragasa'}
         else:
@@ -1037,13 +1032,9 @@ class ComparadorMultiFuente:
         else:
             resultado['veredicto_combinado'] = 'SIN DATOS SUFICIENTES'
             resultado['fuentes_consultadas'] = 0
-
-            if usar_ia:
-                opinion_ia = _revision_ia.opinar_sin_datos(
-                    descripcion, u, precio_cotizado,
-                )
-                if opinion_ia:
-                    resultado['opinion_ia_sin_datos'] = opinion_ia
+            # La opinion de IA para partidas sin ningun dato (si aplica) se
+            # pide en LOTE desde app_v2.py, no aqui -- ver
+            # revision_ia.opinar_sin_datos_lote().
 
         return resultado
 

@@ -53,7 +53,9 @@ from comparador_multifuente_v2 import (
     es_diferencia_extrema,
 )
 from rapidfuzz import fuzz  # se sigue usando fuzz.token_set_ratio en _homologar_uno
-import revision_ia as _revision_ia
+# Nota: ya no se importa revision_ia aqui -- la revision con IA de matches
+# riesgosos de este historico se hace en LOTE desde app_v2.py, no adentro
+# de consultar().
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -266,13 +268,13 @@ class HistoricoGoogleSheets:
                 'tamano y calibre antes de confiar en esta clasificacion.'
             )
 
-        if (confianza == 'BAJA' or diferencia_extrema) and usar_ia:
-            veredicto_ia = _revision_ia.revisar_coincidencia_debil(
-                descripcion, u, out['match'],
-                fuente='historico interno guardado en Google Sheets',
-            )
-            if veredicto_ia:
-                out['revision_ia'] = veredicto_ia
+        # OJO: aqui YA NO se llama a la IA una partida a la vez -- eso se
+        # hace en LOTE desde app_v2.py (ver revision_ia.
+        # revisar_coincidencias_debiles_lote) despues de consultar TODAS
+        # las partidas de la cotizacion, para no tardar minutos ni agotar
+        # el limite de solicitudes por minuto. El parametro usar_ia se deja
+        # en la firma por compatibilidad, pero ya no dispara ninguna
+        # llamada aqui adentro.
 
         return out
 

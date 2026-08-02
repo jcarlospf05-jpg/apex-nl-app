@@ -2029,109 +2029,167 @@ if archivo is not None:
             ):
 
                 filas = []
+                fila_registros = []
 
                 for _, renglon in cotizacion.iterrows():
 
                     precio = convertir_numero(
-                        renglon[
-                            "precio_unitario"
-                        ]
+                        renglon["precio_unitario"]
                     )
 
-                    if (
-                        precio is None
-                        or precio <= 0
-                    ):
+                    if precio is None or precio <= 0:
                         continue
 
-                    concepto = str(
-                        renglon[
-                            "concepto"
-                        ]
-                    ).strip()
-
-                    unidad = str(
-                        renglon[
-                            "unidad"
-                        ]
-                    ).strip()
+                    concepto = str(renglon["concepto"]).strip()
+                    unidad = str(renglon["unidad"]).strip()
 
                     resultado = comparador.evaluar(
                         concepto,
                         unidad,
                         precio,
-                        ajustar_inflacion=(
-                            ajustar_inflacion
-                        ),
+                        ajustar_inflacion=ajustar_inflacion,
                         usar_ia=usar_ia,
                     )
 
-                    nl = resultado[
-                        "fuentes"
-                    ][
-                        "nl_historico"
-                    ]
+                    nl = resultado["fuentes"]["nl_historico"]
+                    cdmx = resultado["fuentes"]["cdmx_gobierno"]
 
-                    cdmx = resultado[
-                        "fuentes"
-                    ][
-                        "cdmx_gobierno"
-                    ]
+                    consulta_historico = None
+                    if historico is not None:
+                        consulta_historico = historico.consultar(
+                            concepto,
+                            unidad,
+                            precio,
+                            usar_ia=usar_ia,
+                        )
+
+                    fila_registros.append(
+                        {
+                            "renglon": renglon,
+                            "precio": precio,
+                            "concepto": concepto,
+                            "unidad": unidad,
+                            "nl": nl,
+                            "cdmx": cdmx,
+                            "consulta_historico": consulta_historico,
+                        }
+                    )
+
+                # ----------------------------------------------------------------
+                # Revisión con IA en LOTE (no una llamada por partida): se juntan
+                # todos los matches riesgosos (confianza BAJA o precio con
+                # diferencia extrema, marcados con 'motivo' por comparador.evaluar()
+                # / historico.consultar()) de TODA la cotización y se mandan en unos
+                # pocos lotes de revision_ia.TAMANO_LOTE elementos. Esto es lo que
+                # evita que revisar 20-25 partidas dudosas tome 2-4 minutos y se
+                # agote el límite de solicitudes por minuto de la cuenta gratuita:
+                # en vez de ~20 llamadas (una por partida), quedan ~3-4 (una por
+                # lote).
+                # ----------------------------------------------------------------
+                if usar_ia:
+
+                    items_revision = []
+
+                    for indice, registro in enumerate(fila_registros):
+
+                        fuentes_a_revisar = [
+                            (
+                                "nl",
+                                registro["nl"],
+                                "historico de Nuevo Leon",
+                            ),
+                            (
+                                "cdmx",
+                                registro["cdmx"],
+                                "Tabulador CDMX (gobierno)",
+                            ),
+                        ]
+
+                        if registro["consulta_historico"] is not None:
+                            fuentes_a_revisar.append(
+                                (
+                                    "hist",
+                                    registro["consulta_historico"],
+                                    "historico interno guardado en Google Sheets",
+                                )
+                            )
+
+                        for clave_fuente, fuente_dict, nombre_fuente in fuentes_a_revisar:
+                            if fuente_dict.get("motivo") and fuente_dict.get("match"):
+                                items_revision.append(
+                                    {
+                                        "id": f"{indice}:{clave_fuente}",
+                                        "descripcion_cotizada": registro["concepto"],
+                                        "unidad": registro["unidad"],
+                                        "descripcion_candidato": fuente_dict["match"],
+                                        "fuente": nombre_fuente,
+                                    }
+                                )
+
+                    if items_revision:
+
+                        resultados_revision = {}
+
+                        for inicio in range(
+                            0, len(items_revision), revision_ia.TAMANO_LOTE
+                        ):
+                            lote = items_revision[
+                                inicio:inicio + revision_ia.TAMANO_LOTE
+                            ]
+                            resultados_revision.update(
+                                revision_ia.revisar_coincidencias_debiles_lote(lote)
+                            )
+
+                        for item in items_revision:
+                            veredicto = resultados_revision.get(item["id"])
+                            if not veredicto:
+                                continue
+                            indice_texto, clave_fuente = item["id"].split(":", 1)
+                            registro = fila_registros[int(indice_texto)]
+                            if clave_fuente == "nl":
+                                registro["nl"]["revision_ia"] = veredicto
+                            elif clave_fuente == "cdmx":
+                                registro["cdmx"]["revision_ia"] = veredicto
+                            elif clave_fuente == "hist":
+                                registro["consulta_historico"]["revision_ia"] = veredicto
+
+                # ----------------------------------------------------------------
+                # Segunda pasada: ya con la revisión de IA (si aplica) resuelta
+                # para todas las partidas, se arma el resultado de cada renglón
+                # exactamente igual que antes.
+                # ----------------------------------------------------------------
+                items_sin_datos = []
+
+                for registro in fila_registros:
+
+                    renglon = registro["renglon"]
+                    precio = registro["precio"]
+                    concepto = registro["concepto"]
+                    unidad = registro["unidad"]
+                    nl = registro["nl"]
+                    cdmx = registro["cdmx"]
+                    consulta_historico = registro["consulta_historico"]
 
                     fila = {
-                        "Partida": renglon.get(
-                            "partida"
-                        ),
+                        "Partida": renglon.get("partida"),
                         "Concepto": concepto,
                         "Unidad": unidad,
-                        "Cantidad": renglon.get(
-                            "cantidad"
-                        ),
+                        "Cantidad": renglon.get("cantidad"),
                         "Precio cotizado": precio,
-                        "Importe": renglon.get(
-                            "importe"
-                        ),
-                        "Origen": renglon.get(
-                            "origen"
-                        ),
-                        "Match NL": nl.get(
-                            "match"
-                        ),
-                        "Confianza NL": nl.get(
-                            "confianza"
-                        ),
-                        "Año del dato NL": nl.get(
-                            "anio_dato_mas_reciente"
-                        ),
-                        (
-                            "Precio mediana NL "
-                            "(original)"
-                        ): nl.get(
-                            "precio_mediana"
-                        ),
-                        (
-                            "Precio mediana NL "
-                            "(ajustado hoy)"
-                        ): nl.get(
+                        "Importe": renglon.get("importe"),
+                        "Origen": renglon.get("origen"),
+                        "Match NL": nl.get("match"),
+                        "Confianza NL": nl.get("confianza"),
+                        "Año del dato NL": nl.get("anio_dato_mas_reciente"),
+                        "Precio mediana NL (original)": nl.get("precio_mediana"),
+                        "Precio mediana NL (ajustado hoy)": nl.get(
                             "precio_mediana_ajustada"
                         ),
-                        "Veredicto NL": nl.get(
-                            "clasificacion"
-                        ),
-                        "Match CDMX": cdmx.get(
-                            "match"
-                        ),
-                        "Confianza CDMX": cdmx.get(
-                            "confianza"
-                        ),
-                        (
-                            "Precio referencia CDMX"
-                        ): cdmx.get(
-                            "precio_referencia"
-                        ),
-                        "Veredicto CDMX": cdmx.get(
-                            "clasificacion"
-                        ),
+                        "Veredicto NL": nl.get("clasificacion"),
+                        "Match CDMX": cdmx.get("match"),
+                        "Confianza CDMX": cdmx.get("confianza"),
+                        "Precio referencia CDMX": cdmx.get("precio_referencia"),
+                        "Veredicto CDMX": cdmx.get("clasificacion"),
                     }
 
                     revision_ia_nl = nl.get("revision_ia")
@@ -2148,23 +2206,15 @@ if archivo is not None:
                             f"{revision_ia_cdmx['razon']}"
                         )
 
-                    opinion_ia = resultado.get("opinion_ia_sin_datos")
-                    if opinion_ia:
-                        fila["Opinión IA (sin datos verificados)"] = (
-                            f"{opinion_ia['opinion']}: "
-                            f"{opinion_ia['razon']}"
-                        )
-
-                    # Si el match quedó marcado como riesgoso (confianza
-                    # BAJA o precio con diferencia extrema) y la IA lo
-                    # rechazó, no estuvo segura, O ni siquiera se pudo
-                    # completar la revisión (ej. límite de la cuenta
-                    # gratuita), no debe contar para el resultado final --
-                    # es más seguro tratarlo como no confirmado que
-                    # confiar en un match que nunca se validó. Se deja
-                    # visible en su columna de detalle (Veredicto NL /
-                    # Veredicto CDMX) para que quede claro qué se
-                    # descartó y por qué.
+                    # Si el match quedó marcado como riesgoso (confianza BAJA o
+                    # precio con diferencia extrema) y la IA lo rechazó, no
+                    # estuvo segura, O ni siquiera se pudo completar la revisión
+                    # (ej. límite de la cuenta gratuita), no debe contar para el
+                    # resultado final -- es más seguro tratarlo como no
+                    # confirmado que confiar en un match que nunca se validó. Se
+                    # deja visible en su columna de detalle (Veredicto NL /
+                    # Veredicto CDMX) para que quede claro qué se descartó y por
+                    # qué.
                     nl_rechazado_por_ia, motivo_descarte_nl = (
                         _revision_ia_descarta(nl, usar_ia)
                     )
@@ -2199,8 +2249,8 @@ if archivo is not None:
 
                     # Precio(s) de referencia de las mismas fuentes que sí
                     # cuentan para el veredicto (se excluyen las que la IA
-                    # rechazó) -- sirve para calcular el % de diferencia
-                    # de la partida contra el mercado.
+                    # rechazó) -- sirve para calcular el % de diferencia de la
+                    # partida contra el mercado.
                     referencias_precio = [
                         valor
                         for valor in (
@@ -2214,160 +2264,98 @@ if archivo is not None:
                         if valor
                     ]
 
-                    if historico is not None:
+                    if consulta_historico is not None and consulta_historico.get(
+                        "match"
+                    ):
 
-                        consulta_historico = (
-                            historico.consultar(
-                                concepto,
-                                unidad,
-                                precio,
-                                usar_ia=usar_ia,
-                            )
+                        fila["Match histórico interno"] = consulta_historico["match"]
+
+                        fila["Confianza histórico interno"] = consulta_historico.get(
+                            "confianza"
                         )
 
-                        if consulta_historico.get(
-                            "match"
+                        fila["Proveedores en histórico"] = ", ".join(
+                            consulta_historico.get("proveedores", [])
+                        )
+
+                        fila["Precio mediana histórico"] = consulta_historico.get(
+                            "precio_mediana"
+                        )
+
+                        veredicto_historico = consulta_historico.get("clasificacion")
+
+                        revision_ia_historico = consulta_historico.get("revision_ia")
+
+                        if revision_ia_historico:
+                            fila["Revisión IA (match histórico débil)"] = (
+                                f"{revision_ia_historico['veredicto']}: "
+                                f"{revision_ia_historico['razon']}"
+                            )
+
+                        historico_rechazado_por_ia, motivo_descarte_historico = (
+                            _revision_ia_descarta(consulta_historico, usar_ia)
+                        )
+
+                        if historico_rechazado_por_ia and veredicto_historico:
+                            veredicto_historico = (
+                                f"{veredicto_historico} "
+                                f"(descartado: {motivo_descarte_historico})"
+                            )
+
+                        fila["Veredicto histórico"] = veredicto_historico
+
+                        if (
+                            consulta_historico.get("clasificacion")
+                            and not historico_rechazado_por_ia
                         ):
 
-                            fila[
-                                "Match histórico interno"
-                            ] = consulta_historico[
-                                "match"
-                            ]
-
-                            fila[
-                                "Confianza histórico interno"
-                            ] = consulta_historico.get(
-                                "confianza"
+                            clasificaciones.append(
+                                consulta_historico["clasificacion"]
                             )
 
-                            fila[
-                                "Proveedores en histórico"
-                            ] = ", ".join(
-                                consulta_historico.get(
-                                    "proveedores",
-                                    [],
+                            if consulta_historico.get("precio_mediana"):
+                                referencias_precio.append(
+                                    consulta_historico["precio_mediana"]
                                 )
-                            )
-
-                            fila[
-                                "Precio mediana histórico"
-                            ] = consulta_historico.get(
-                                "precio_mediana"
-                            )
-
-                            veredicto_historico = (
-                                consulta_historico.get(
-                                    "clasificacion"
-                                )
-                            )
-
-                            revision_ia_historico = (
-                                consulta_historico.get(
-                                    "revision_ia"
-                                )
-                            )
-
-                            if revision_ia_historico:
-                                fila[
-                                    "Revisión IA (match histórico débil)"
-                                ] = (
-                                    f"{revision_ia_historico['veredicto']}: "
-                                    f"{revision_ia_historico['razon']}"
-                                )
-
-                            historico_rechazado_por_ia, motivo_descarte_historico = (
-                                _revision_ia_descarta(
-                                    consulta_historico, usar_ia
-                                )
-                            )
-
-                            if (
-                                historico_rechazado_por_ia
-                                and veredicto_historico
-                            ):
-                                veredicto_historico = (
-                                    f"{veredicto_historico} "
-                                    f"(descartado: {motivo_descarte_historico})"
-                                )
-
-                            fila[
-                                "Veredicto histórico"
-                            ] = veredicto_historico
-
-                            if (
-                                consulta_historico.get(
-                                    "clasificacion"
-                                )
-                                and not historico_rechazado_por_ia
-                            ):
-
-                                clasificaciones.append(
-                                    consulta_historico[
-                                        "clasificacion"
-                                    ]
-                                )
-
-                                if consulta_historico.get(
-                                    "precio_mediana"
-                                ):
-                                    referencias_precio.append(
-                                        consulta_historico[
-                                            "precio_mediana"
-                                        ]
-                                    )
 
                     if clasificaciones:
 
                         conteo = {
-                            clasificacion: (
-                                clasificaciones.count(
-                                    clasificacion
-                                )
-                            )
-                            for clasificacion
-                            in set(
-                                clasificaciones
-                            )
+                            clasificacion: clasificaciones.count(clasificacion)
+                            for clasificacion in set(clasificaciones)
                         }
 
-                        fila[
-                            "RESULTADO FINAL"
-                        ] = max(
-                            conteo,
-                            key=conteo.get,
-                        )
+                        fila["RESULTADO FINAL"] = max(conteo, key=conteo.get)
 
                     else:
 
-                        fila[
-                            "RESULTADO FINAL"
-                        ] = (
-                            "SIN DATOS SUFICIENTES"
-                        )
+                        fila["RESULTADO FINAL"] = "SIN DATOS SUFICIENTES"
 
-                    # % de diferencia del precio cotizado contra el
-                    # promedio de los precios de referencia que sí
-                    # contaron para el veredicto (positivo = más caro
-                    # que el mercado, negativo = más barato). Si no hubo
-                    # ninguna fuente confiable, se deja en blanco -- no
-                    # hay con qué comparar.
+                        if usar_ia:
+                            items_sin_datos.append(
+                                {
+                                    "id": str(len(filas)),
+                                    "descripcion_cotizada": concepto,
+                                    "unidad": unidad,
+                                    "precio_cotizado": precio,
+                                }
+                            )
+
+                    # % de diferencia del precio cotizado contra el promedio de
+                    # los precios de referencia que sí contaron para el
+                    # veredicto (positivo = más caro que el mercado, negativo =
+                    # más barato). Si no hubo ninguna fuente confiable, se deja
+                    # en blanco -- no hay con qué comparar.
                     if referencias_precio:
 
                         precio_referencia_promedio = (
-                            sum(referencias_precio)
-                            / len(referencias_precio)
+                            sum(referencias_precio) / len(referencias_precio)
                         )
 
                         if precio_referencia_promedio:
 
-                            fila[
-                                "% Diferencia vs referencia"
-                            ] = round(
-                                (
-                                    precio
-                                    - precio_referencia_promedio
-                                )
+                            fila["% Diferencia vs referencia"] = round(
+                                (precio - precio_referencia_promedio)
                                 / precio_referencia_promedio
                                 * 100,
                                 1,
@@ -2375,19 +2363,42 @@ if archivo is not None:
 
                         else:
 
-                            fila[
-                                "% Diferencia vs referencia"
-                            ] = None
+                            fila["% Diferencia vs referencia"] = None
 
                     else:
 
-                        fila[
-                            "% Diferencia vs referencia"
-                        ] = None
+                        fila["% Diferencia vs referencia"] = None
 
-                    filas.append(
-                        fila
-                    )
+                    filas.append(fila)
+
+                # ----------------------------------------------------------------
+                # Opinión de IA en LOTE para las partidas que quedaron totalmente
+                # "SIN DATOS SUFICIENTES" (sin ningún match en ninguna fuente, o
+                # con todos sus matches descartados por la revisión de arriba).
+                # Igual que la revisión de matches débiles, se manda en unos
+                # pocos lotes en vez de una llamada por partida.
+                # ----------------------------------------------------------------
+                if usar_ia and items_sin_datos:
+
+                    opiniones = {}
+
+                    for inicio in range(
+                        0, len(items_sin_datos), revision_ia.TAMANO_LOTE
+                    ):
+                        lote = items_sin_datos[inicio:inicio + revision_ia.TAMANO_LOTE]
+                        opiniones.update(
+                            revision_ia.opinar_sin_datos_lote(lote)
+                        )
+
+                    for item in items_sin_datos:
+                        opinion_ia = opiniones.get(item["id"])
+                        if not opinion_ia:
+                            continue
+                        indice_fila = int(item["id"])
+                        filas[indice_fila]["Opinión IA (sin datos verificados)"] = (
+                            f"{opinion_ia['opinion']}: {opinion_ia['razon']}"
+                        )
+
 
                 tabla = pd.DataFrame(
                     filas
