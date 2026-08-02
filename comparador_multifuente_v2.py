@@ -975,7 +975,15 @@ class ComparadorMultiFuente:
                           'Usa comparador.cargar_competidores(ruta_o_dataframe) con las cotizaciones reales para activar esta fuente.'
             }
 
-        clasificaciones = [f['clasificacion'] for f in resultado['fuentes'].values() if isinstance(f, dict) and f.get('clasificacion')]
+        # Si la IA revisó un match de confianza BAJA y dijo RECHAZA, ese
+        # precio de referencia queda confirmado como incorrecto y no debe
+        # contar para el veredicto combinado, aunque el buscador de texto
+        # lo haya encontrado.
+        clasificaciones = [
+            f['clasificacion'] for f in resultado['fuentes'].values()
+            if isinstance(f, dict) and f.get('clasificacion')
+            and (f.get('revision_ia') or {}).get('veredicto') != 'RECHAZA'
+        ]
         if clasificaciones:
             conteo = {c: clasificaciones.count(c) for c in set(clasificaciones)}
             resultado['veredicto_combinado'] = max(conteo, key=conteo.get)

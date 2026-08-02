@@ -2149,15 +2149,43 @@ if archivo is not None:
                             f"{opinion_ia['razon']}"
                         )
 
+                    # Si la IA revisó un match débil y lo RECHAZÓ, ese
+                    # precio de referencia ya está confirmado como
+                    # incorrecto -- no debe contar para el resultado
+                    # final aunque el buscador de texto lo haya
+                    # encontrado. Se deja visible en su columna de
+                    # detalle (Veredicto NL / Veredicto CDMX) para que
+                    # quede claro qué se descartó y por qué.
+                    nl_rechazado_por_ia = (
+                        revision_ia_nl
+                        and revision_ia_nl.get("veredicto") == "RECHAZA"
+                    )
+                    cdmx_rechazado_por_ia = (
+                        revision_ia_cdmx
+                        and revision_ia_cdmx.get("veredicto") == "RECHAZA"
+                    )
+
+                    if nl_rechazado_por_ia and fila.get("Veredicto NL"):
+                        fila["Veredicto NL"] = (
+                            f"{fila['Veredicto NL']} "
+                            "(descartado: la IA rechazó el match)"
+                        )
+
+                    if cdmx_rechazado_por_ia and fila.get("Veredicto CDMX"):
+                        fila["Veredicto CDMX"] = (
+                            f"{fila['Veredicto CDMX']} "
+                            "(descartado: la IA rechazó el match)"
+                        )
+
                     clasificaciones = [
                         valor
                         for valor in (
-                            nl.get(
-                                "clasificacion"
-                            ),
-                            cdmx.get(
-                                "clasificacion"
-                            ),
+                            nl.get("clasificacion")
+                            if not nl_rechazado_por_ia
+                            else None,
+                            cdmx.get("clasificacion")
+                            if not cdmx_rechazado_por_ia
+                            else None,
                         )
                         if valor
                     ]
@@ -2234,7 +2262,7 @@ if archivo is not None:
                         }
 
                         fila[
-                            "Veredicto final"
+                            "RESULTADO FINAL"
                         ] = max(
                             conteo,
                             key=conteo.get,
@@ -2243,7 +2271,7 @@ if archivo is not None:
                     else:
 
                         fila[
-                            "Veredicto final"
+                            "RESULTADO FINAL"
                         ] = (
                             "SIN DATOS SUFICIENTES"
                         )
@@ -2305,7 +2333,7 @@ if archivo is not None:
             else:
 
                 resumen_veredictos = tabla[
-                    "Veredicto final"
+                    "RESULTADO FINAL"
                 ].value_counts()
 
                 c1, c2, c3, c4, c5 = st.columns(
@@ -2392,7 +2420,7 @@ if archivo is not None:
                     tabla.style.map(
                         resaltar,
                         subset=[
-                            "Veredicto final"
+                            "RESULTADO FINAL"
                         ],
                     ),
                     use_container_width=True,
