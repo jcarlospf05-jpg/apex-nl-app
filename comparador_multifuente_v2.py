@@ -665,6 +665,25 @@ def clasificar(precio: float, low: float, high: float) -> str:
     return 'EN MERCADO'
 
 
+# Si el precio cotizado esta a mas de este multiplo del precio de
+# referencia (para arriba o para abajo), se manda a revision de IA aunque
+# el match tenga confianza ALTA/MEDIA -- un texto parecido no garantiza
+# que sea el mismo producto/tamano/calibre cuando el precio esta a este
+# nivel de distancia (ej. una "TEE" generica de $115 contra una "TEE"
+# industrial cotizada en $56,000: mismo nombre, escala totalmente distinta).
+FACTOR_DIFERENCIA_EXTREMA = 5.0
+
+
+def es_diferencia_extrema(precio_cotizado: float, precio_referencia: float,
+                           factor: float = FACTOR_DIFERENCIA_EXTREMA) -> bool:
+    if not precio_referencia or not precio_cotizado:
+        return False
+    return (
+        precio_cotizado > precio_referencia * factor
+        or precio_cotizado < precio_referencia / factor
+    )
+
+
 def score_combinado(s1, s2, *, processor=None, score_cutoff=None):
     """Scorer compuesto: en vez de depender de un solo algoritmo de
     similitud, calcula tres y se queda con el mejor. Esto ayuda cuando la
@@ -879,19 +898,31 @@ class ComparadorMultiFuente:
                 'referencia_ajuste': f'INPC INEGI, {anio_dato} -> {_inflacion.ETIQUETA_ACTUAL} ({FUENTE_INPC})' if ajustar_inflacion else None,
                 'clasificacion': veredicto,
             }
+            precio_ref_nl = resultado['fuentes']['nl_historico']['precio_mediana_ajustada']
+            diferencia_extrema_nl = es_diferencia_extrema(precio_cotizado, precio_ref_nl)
+
             if confianza == 'BAJA':
                 resultado['fuentes']['nl_historico']['motivo'] = (
                     'coincidencia debil (revisar a mano): el texto no es muy '
                     'parecido, confirma que sea el mismo concepto antes de '
                     'confiar en este precio de referencia.'
                 )
-                if usar_ia:
-                    veredicto_ia = _revision_ia.revisar_coincidencia_debil(
-                        descripcion, u, row['concepto_homologado'],
-                        fuente='historico de Nuevo Leon',
-                    )
-                    if veredicto_ia:
-                        resultado['fuentes']['nl_historico']['revision_ia'] = veredicto_ia
+            elif diferencia_extrema_nl:
+                resultado['fuentes']['nl_historico']['motivo'] = (
+                    'precio muy alejado de la referencia (revisar a mano): '
+                    'el texto coincide bien, pero el precio esta a una '
+                    'distancia inusual -- confirma que sea el mismo '
+                    'producto, tamano y calibre antes de confiar en esta '
+                    'clasificacion.'
+                )
+
+            if (confianza == 'BAJA' or diferencia_extrema_nl) and usar_ia:
+                veredicto_ia = _revision_ia.revisar_coincidencia_debil(
+                    descripcion, u, row['concepto_homologado'],
+                    fuente='historico de Nuevo Leon',
+                )
+                if veredicto_ia:
+                    resultado['fuentes']['nl_historico']['revision_ia'] = veredicto_ia
         else:
             resultado['fuentes']['nl_historico'] = {'match': None, 'motivo': f'sin coincidencia ni relajada en unidad {u}'}
 
@@ -907,19 +938,30 @@ class ComparadorMultiFuente:
                 'precio_referencia': precio_ref, 'banda_baja': round(low, 2), 'banda_alta': round(high, 2),
                 'clasificacion': clasificar(precio_cotizado, low, high),
             }
+            diferencia_extrema_cdmx = es_diferencia_extrema(precio_cotizado, precio_ref)
+
             if confianza == 'BAJA':
                 resultado['fuentes']['cdmx_gobierno']['motivo'] = (
                     'coincidencia debil (revisar a mano): el texto no es muy '
                     'parecido, confirma que sea el mismo concepto antes de '
                     'confiar en este precio de referencia.'
                 )
-                if usar_ia:
-                    veredicto_ia = _revision_ia.revisar_coincidencia_debil(
-                        descripcion, u, row['concepto'],
-                        fuente='Tabulador CDMX (gobierno)',
-                    )
-                    if veredicto_ia:
-                        resultado['fuentes']['cdmx_gobierno']['revision_ia'] = veredicto_ia
+            elif diferencia_extrema_cdmx:
+                resultado['fuentes']['cdmx_gobierno']['motivo'] = (
+                    'precio muy alejado de la referencia (revisar a mano): '
+                    'el texto coincide bien, pero el precio esta a una '
+                    'distancia inusual -- confirma que sea el mismo '
+                    'producto, tamano y calibre antes de confiar en esta '
+                    'clasificacion.'
+                )
+
+            if (confianza == 'BAJA' or diferencia_extrema_cdmx) and usar_ia:
+                veredicto_ia = _revision_ia.revisar_coincidencia_debil(
+                    descripcion, u, row['concepto'],
+                    fuente='Tabulador CDMX (gobierno)',
+                )
+                if veredicto_ia:
+                    resultado['fuentes']['cdmx_gobierno']['revision_ia'] = veredicto_ia
         else:
             resultado['fuentes']['cdmx_gobierno'] = {'match': None, 'motivo': f'sin coincidencia ni relajada en unidad {u}'}
 
@@ -929,13 +971,15 @@ class ComparadorMultiFuente:
             m = self._match_pool(pools, t, u, min_score, scorer)
             if m:
                 score, row, confianza = m
+                precio_hist_ragasa = float(row['precio_unitario'])
                 resultado['fuentes']['ragasa_historico'] = {
                     'match': row['concepto'], 'score': round(score, 1),
                     'confianza': confianza,
-                    'precio_historico': float(row['precio_unitario']),
-                    'clasificacion': clasificar(precio_cotizado, row['precio_unitario'] * 0.9, row['precio_unitario'] * 1.1),
+                    'precio_historico': precio_hist_ragasa,
+                    'clasificacion': clasificar(precio_cotizado, precio_hist_ragasa * 0.9, precio_hist_ragasa * 1.1),
                 }
-                if confianza == 'BAJA' and usar_ia:
+                diferencia_extrema_ragasa = es_diferencia_extrema(precio_cotizado, precio_hist_ragasa)
+                if (confianza == 'BAJA' or diferencia_extrema_ragasa) and usar_ia:
                     veredicto_ia = _revision_ia.revisar_coincidencia_debil(
                         descripcion, u, row['concepto'],
                         fuente='historico interno de Ragasa',
