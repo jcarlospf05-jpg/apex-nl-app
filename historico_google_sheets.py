@@ -119,7 +119,20 @@ class HistoricoGoogleSheets:
         self._cargar()
 
     def _cargar(self):
-        registros = self.sheet.get_all_records()
+        # OJO: se pide el valor SIN formatear (UNFORMATTED_VALUE) a proposito.
+        # gspread.get_all_records() por defecto trae el valor ya "formateado"
+        # como texto y luego intenta convertirlo el mismo a numero -- pero
+        # esa conversion asume formato tipo "11,785.5" (coma de miles, punto
+        # decimal). Esta hoja esta en configuracion regional Espanol/Mexico,
+        # donde un precio como 11785.5 se MUESTRA como "11785,5" (coma
+        # decimal). gspread interpreta esa coma como separador de miles y la
+        # descarta, convirtiendo "11785,5" en 117855 -- un precio 10 veces
+        # mas alto que el real. Pedir el valor sin formatear evita ese
+        # problema por completo: se recibe el numero real (11785.5) tal cual
+        # esta guardado, sin pasar por ninguna interpretacion de texto.
+        registros = self.sheet.get_all_records(
+            value_render_option="UNFORMATTED_VALUE"
+        )
         if registros:
             self.df = pd.DataFrame(registros)
             for col in COLUMNAS:
@@ -127,6 +140,7 @@ class HistoricoGoogleSheets:
                     self.df[col] = None
             self.df['cluster_id'] = pd.to_numeric(self.df['cluster_id'], errors='coerce').fillna(0).astype(int)
             self.df['precio_unitario'] = pd.to_numeric(self.df['precio_unitario'], errors='coerce')
+            self.df['diferencia_pct'] = pd.to_numeric(self.df['diferencia_pct'], errors='coerce')
         else:
             self.df = pd.DataFrame(columns=COLUMNAS)
         self._next_cluster_id = (self.df['cluster_id'].max() + 1) if len(self.df) else 0
