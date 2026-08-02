@@ -1019,14 +1019,15 @@ class ComparadorMultiFuente:
                           'Usa comparador.cargar_competidores(ruta_o_dataframe) con las cotizaciones reales para activar esta fuente.'
             }
 
-        # Si la IA revisó un match de confianza BAJA y dijo RECHAZA, ese
-        # precio de referencia queda confirmado como incorrecto y no debe
-        # contar para el veredicto combinado, aunque el buscador de texto
-        # lo haya encontrado.
+        # Si un match quedo marcado como riesgoso (confianza BAJA o
+        # precio con diferencia extrema) y la IA lo rechazo, no estuvo
+        # segura, o la revision nunca se completo (ej. limite de la
+        # cuenta gratuita), no debe contar para el veredicto combinado --
+        # ver _revision_ia.debe_descartarse().
         clasificaciones = [
             f['clasificacion'] for f in resultado['fuentes'].values()
             if isinstance(f, dict) and f.get('clasificacion')
-            and (f.get('revision_ia') or {}).get('veredicto') != 'RECHAZA'
+            and not _revision_ia.debe_descartarse(f, usar_ia)[0]
         ]
         if clasificaciones:
             conteo = {c: clasificaciones.count(c) for c in set(clasificaciones)}

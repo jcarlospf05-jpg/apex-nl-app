@@ -332,3 +332,45 @@ def opinar_sin_datos(
         "razon": str(datos.get("razon", "")).strip(),
         "modelo": f"{proveedor}:{modelo_usado}",
     }
+
+
+def debe_descartarse(fuente: dict, usar_ia: bool):
+    """
+    Decide si un match que el comparador ya marco como riesgoso
+    (confianza BAJA o precio con diferencia extrema -- se detecta porque
+    trae fuente['motivo']) debe excluirse del resultado final.
+
+    Se descarta si:
+      - la IA lo reviso y dijo RECHAZA o NO_SEGURO, o
+      - se activo la revision con IA pero la llamada nunca se completo
+        (ej. se topo el limite de la cuenta gratuita) -- en ese caso NO
+        hay que asumir que el match es bueno solo porque no hubo
+        respuesta; es mas seguro tratarlo como no confirmado que confiar
+        en un precio de referencia que nunca se valido.
+
+    Si usar_ia es False, o el match no estaba marcado como riesgoso
+    (sin 'motivo'), no se descarta -- se comporta igual que antes de
+    tener esta capa.
+
+    Regresa (True/False, razon_para_mostrar_o_None).
+    """
+    if not usar_ia or not fuente.get('motivo'):
+        return False, None
+
+    revision = fuente.get('revision_ia')
+
+    if revision is None:
+        return True, (
+            'no se pudo completar la revisión con IA (posible límite '
+            'de la cuenta gratuita) -- se descarta por precaución'
+        )
+
+    veredicto = revision.get('veredicto')
+
+    if veredicto == 'RECHAZA':
+        return True, 'la IA rechazó el match'
+
+    if veredicto == 'NO_SEGURO':
+        return True, 'la IA no pudo confirmar el match con seguridad'
+
+    return False, None

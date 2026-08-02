@@ -122,6 +122,11 @@ historico = cargar_historico()
 # opcional.
 ia_disponible = revision_ia.ia_disponible()
 
+# Alias local: la logica de "cuando descartar un match riesgoso" vive en
+# revision_ia.py (compartida con comparador_multifuente_v2.py) para no
+# duplicarla en dos archivos.
+_revision_ia_descarta = revision_ia.debe_descartarse
+
 # Intenta traer el dato mas reciente del INPC directo de la API de INEGI.
 # Si no hay token configurado (Secrets: inegi_api_token) o falla la
 # conexion, no truena nada: se queda con el valor de respaldo de
@@ -2150,32 +2155,33 @@ if archivo is not None:
                             f"{opinion_ia['razon']}"
                         )
 
-                    # Si la IA revisó un match débil y lo RECHAZÓ, ese
-                    # precio de referencia ya está confirmado como
-                    # incorrecto -- no debe contar para el resultado
-                    # final aunque el buscador de texto lo haya
-                    # encontrado. Se deja visible en su columna de
-                    # detalle (Veredicto NL / Veredicto CDMX) para que
-                    # quede claro qué se descartó y por qué.
-                    nl_rechazado_por_ia = (
-                        revision_ia_nl
-                        and revision_ia_nl.get("veredicto") == "RECHAZA"
+                    # Si el match quedó marcado como riesgoso (confianza
+                    # BAJA o precio con diferencia extrema) y la IA lo
+                    # rechazó, no estuvo segura, O ni siquiera se pudo
+                    # completar la revisión (ej. límite de la cuenta
+                    # gratuita), no debe contar para el resultado final --
+                    # es más seguro tratarlo como no confirmado que
+                    # confiar en un match que nunca se validó. Se deja
+                    # visible en su columna de detalle (Veredicto NL /
+                    # Veredicto CDMX) para que quede claro qué se
+                    # descartó y por qué.
+                    nl_rechazado_por_ia, motivo_descarte_nl = (
+                        _revision_ia_descarta(nl, usar_ia)
                     )
-                    cdmx_rechazado_por_ia = (
-                        revision_ia_cdmx
-                        and revision_ia_cdmx.get("veredicto") == "RECHAZA"
+                    cdmx_rechazado_por_ia, motivo_descarte_cdmx = (
+                        _revision_ia_descarta(cdmx, usar_ia)
                     )
 
                     if nl_rechazado_por_ia and fila.get("Veredicto NL"):
                         fila["Veredicto NL"] = (
                             f"{fila['Veredicto NL']} "
-                            "(descartado: la IA rechazó el match)"
+                            f"(descartado: {motivo_descarte_nl})"
                         )
 
                     if cdmx_rechazado_por_ia and fila.get("Veredicto CDMX"):
                         fila["Veredicto CDMX"] = (
                             f"{fila['Veredicto CDMX']} "
-                            "(descartado: la IA rechazó el match)"
+                            f"(descartado: {motivo_descarte_cdmx})"
                         )
 
                     clasificaciones = [
@@ -2270,11 +2276,10 @@ if archivo is not None:
                                     f"{revision_ia_historico['razon']}"
                                 )
 
-                            historico_rechazado_por_ia = (
-                                revision_ia_historico
-                                and revision_ia_historico.get(
-                                    "veredicto"
-                                ) == "RECHAZA"
+                            historico_rechazado_por_ia, motivo_descarte_historico = (
+                                _revision_ia_descarta(
+                                    consulta_historico, usar_ia
+                                )
                             )
 
                             if (
@@ -2283,7 +2288,7 @@ if archivo is not None:
                             ):
                                 veredicto_historico = (
                                     f"{veredicto_historico} "
-                                    "(descartado: la IA rechazó el match)"
+                                    f"(descartado: {motivo_descarte_historico})"
                                 )
 
                             fila[
