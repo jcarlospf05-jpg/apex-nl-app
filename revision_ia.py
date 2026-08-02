@@ -1,5 +1,5 @@
 """
-Revision asistida con IA (Claude) - capa OPCIONAL de segunda opinion
+Revision asistida con IA - capa OPCIONAL de segunda opinion
 ======================================================================
 Este modulo NO reemplaza las fuentes de precio reales (NL, CDMX,
 historico interno) -- esas siguen siendo la unica fuente de verdad
@@ -22,83 +22,145 @@ resolver bien por si solo:
      verificado, siempre queda marcado como "opinion de IA, no dato
      verificado".
 
-Requiere una API key de Anthropic configurada en Streamlit Secrets
-(anthropic_api_key) o en la variable de entorno ANTHROPIC_API_KEY.
-Si no hay key configurada, o falta instalar el paquete `anthropic`,
-o la llamada falla por cualquier motivo (sin internet, rate limit,
-etc.), todas las funciones de este modulo regresan None sin tronar
-la app -- exactamente el mismo patron que ya usan ajuste_inflacion.py
-(token de INEGI) y historico_google_sheets.py (credenciales de
-Google): la app sigue funcionando normal, solo sin esta capa extra.
+SOBRE EL PROVEEDOR DE IA: en Ragasa el uso de Claude (Anthropic) esta
+bloqueado por politica de la empresa, y todavia no esta confirmado si
+se puede usar OpenAI/ChatGPT. Para no depender de una sola respuesta
+que despues cambie, este modulo detecta AUTOMATICAMENTE cual proveedor
+tiene una API key configurada y usa ese -- funciona igual sin importar
+cual termine aprobado:
+
+  - Gemini (Google):  Secrets -> gemini_api_key  (o env GEMINI_API_KEY)
+  - OpenAI (ChatGPT):  Secrets -> openai_api_key  (o env OPENAI_API_KEY)
+
+Si hay las dos, se prefiere Gemini. Si no hay ninguna, o falta
+instalar el paquete correspondiente (`google-genai` / `openai`), o la
+llamada falla por cualquier motivo (sin internet, rate limit, etc.),
+todas las funciones de este modulo regresan None sin tronar la app --
+exactamente el mismo patron que ya usan ajuste_inflacion.py (token de
+INEGI) y historico_google_sheets.py (credenciales de Google): la app
+sigue funcionando normal, solo sin esta capa extra.
 """
 import json
 import os
 
-MODELO_POR_DEFECTO = "claude-haiku-4-5-20251001"
+MODELO_GEMINI_POR_DEFECTO = "gemini-3.5-flash-lite"
+MODELO_OPENAI_POR_DEFECTO = "gpt-5-mini"
 
-_cliente_cache = {"cliente": None, "intentado": False}
+_proveedor_cache = {"proveedor": None, "cliente": None, "intentado": False}
 
 
-def _obtener_api_key(api_key=None):
-    if api_key:
-        return api_key
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if api_key:
-        return api_key
-
+def _leer_secret(nombre):
     try:
         import streamlit as st
 
-        if "anthropic_api_key" in st.secrets:
-            return st.secrets["anthropic_api_key"]
+        if nombre in st.secrets:
+            return st.secrets[nombre]
     except Exception:
         pass
-
     return None
 
 
-def _obtener_cliente(api_key=None):
-    """Regresa un cliente de Anthropic listo para usar, o None si no
-    hay API key configurada o falta instalar el paquete `anthropic`.
-    Nunca lanza excepcion."""
-    if api_key is None and _cliente_cache["intentado"]:
-        return _cliente_cache["cliente"]
+def _obtener_cliente(api_key=None, proveedor_forzado=None):
+    """Detecta que proveedor de IA tiene una key configurada (Gemini
+    primero, luego OpenAI) y regresa (proveedor, cliente). Si no hay
+    ninguna key o falta el paquete correspondiente, regresa
+    (None, None). Nunca lanza excepcion."""
+    usar_cache = api_key is None and proveedor_forzado is None
+    if usar_cache and _proveedor_cache["intentado"]:
+        return _proveedor_cache["proveedor"], _proveedor_cache["cliente"]
 
-    key = _obtener_api_key(api_key)
+    proveedor, cliente = None, None
 
-    cliente = None
-    if key:
-        try:
-            import anthropic
+    if proveedor_forzado in (None, "gemini"):
+        key = api_key or os.environ.get("GEMINI_API_KEY") or _leer_secret("gemini_api_key")
+        if key:
+            try:
+                from google import genai
 
-            cliente = anthropic.Anthropic(api_key=key)
-        except Exception:
-            cliente = None
+                cliente = genai.Client(api_key=key)
+                proveedor = "gemini"
+            except Exception:
+                cliente = None
 
-    if api_key is None:
-        _cliente_cache["intentado"] = True
-        _cliente_cache["cliente"] = cliente
+    if cliente is None and proveedor_forzado in (None, "openai"):
+        key = api_key or os.environ.get("OPENAI_API_KEY") or _leer_secret("openai_api_key")
+        if key:
+            try:
+                import openai
 
-    return cliente
+                cliente = openai.OpenAI(api_key=key)
+                proveedor = "openai"
+            except Exception:
+                cliente = None
+
+    if usar_cache:
+        _proveedor_cache["intentado"] = True
+        _proveedor_cache["proveedor"] = proveedor
+        _proveedor_cache["cliente"] = cliente
+
+    return proveedor, cliente
 
 
 def ia_disponible(api_key=None) -> bool:
-    return _obtener_cliente(api_key) is not None
+    proveedor, cliente = _obtener_cliente(api_key)
+    return cliente is not None
 
 
-def _llamar_claude(cliente, prompt, modelo=MODELO_POR_DEFECTO, max_tokens=250):
+def _llamar_gemini(cliente, prompt, modelo, max_tokens):
     try:
-        respuesta = cliente.messages.create(
+        respuesta = cliente.models.generate_content(
             model=modelo,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+                "max_output_tokens": max_tokens,
+            },
         )
-        return "".join(
-            bloque.text for bloque in respuesta.content if hasattr(bloque, "text")
+        return respuesta.text
+    except Exception:
+        pass
+
+    try:
+        respuesta = cliente.models.generate_content(
+            model=modelo,
+            contents=prompt,
         )
+        return respuesta.text
     except Exception:
         return None
+
+
+def _llamar_openai(cliente, prompt, modelo, max_tokens):
+    try:
+        respuesta = cliente.chat.completions.create(
+            model=modelo,
+            max_completion_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        return respuesta.choices[0].message.content
+    except Exception:
+        pass
+
+    try:
+        respuesta = cliente.chat.completions.create(
+            model=modelo,
+            max_completion_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return respuesta.choices[0].message.content
+    except Exception:
+        return None
+
+
+def _llamar_ia(proveedor, cliente, prompt, modelo=None, max_tokens=250):
+    if proveedor == "gemini":
+        modelo = modelo or MODELO_GEMINI_POR_DEFECTO
+        return _llamar_gemini(cliente, prompt, modelo, max_tokens), modelo
+    if proveedor == "openai":
+        modelo = modelo or MODELO_OPENAI_POR_DEFECTO
+        return _llamar_openai(cliente, prompt, modelo, max_tokens), modelo
+    return None, modelo
 
 
 def _extraer_json(texto):
@@ -125,10 +187,10 @@ def revisar_coincidencia_debil(
     descripcion_candidato: str,
     fuente: str,
     api_key=None,
-    modelo=MODELO_POR_DEFECTO,
+    modelo=None,
 ):
     """
-    Para un match ya encontrado con confianza BAJA: le pide a Claude
+    Para un match ya encontrado con confianza BAJA: le pide a la IA
     que confirme o rechace si de verdad es el mismo material/concepto
     (no solo texto parecido).
 
@@ -137,7 +199,7 @@ def revisar_coincidencia_debil(
     o la llamada fallo -- en ese caso quien llama debe seguir
     tratando el match como BAJA sin cambiar nada.
     """
-    cliente = _obtener_cliente(api_key)
+    proveedor, cliente = _obtener_cliente(api_key)
     if cliente is None:
         return None
 
@@ -164,7 +226,8 @@ def revisar_coincidencia_debil(
         "verdad no se puede saber con la informacion dada."
     )
 
-    datos = _extraer_json(_llamar_claude(cliente, prompt, modelo=modelo, max_tokens=200))
+    texto, modelo_usado = _llamar_ia(proveedor, cliente, prompt, modelo=modelo, max_tokens=200)
+    datos = _extraer_json(texto)
     if not datos or "veredicto" not in datos:
         return None
 
@@ -175,7 +238,7 @@ def revisar_coincidencia_debil(
     return {
         "veredicto": veredicto,
         "razon": str(datos.get("razon", "")).strip(),
-        "modelo": modelo,
+        "modelo": f"{proveedor}:{modelo_usado}",
     }
 
 
@@ -184,7 +247,7 @@ def opinar_sin_datos(
     unidad: str,
     precio_cotizado: float,
     api_key=None,
-    modelo=MODELO_POR_DEFECTO,
+    modelo=None,
 ):
     """
     Para una partida SIN NINGUN match en ninguna fuente: pide una
@@ -196,7 +259,7 @@ def opinar_sin_datos(
     'NO_PUEDO_OPINAR', 'razon': str, 'modelo': str}, o None si la IA
     no esta disponible o la llamada fallo.
     """
-    cliente = _obtener_cliente(api_key)
+    proveedor, cliente = _obtener_cliente(api_key)
     if cliente is None:
         return None
 
@@ -222,7 +285,8 @@ def opinar_sin_datos(
         "una opinion responsable sin mas contexto."
     )
 
-    datos = _extraer_json(_llamar_claude(cliente, prompt, modelo=modelo, max_tokens=200))
+    texto, modelo_usado = _llamar_ia(proveedor, cliente, prompt, modelo=modelo, max_tokens=200)
+    datos = _extraer_json(texto)
     if not datos or "opinion" not in datos:
         return None
 
@@ -233,5 +297,5 @@ def opinar_sin_datos(
     return {
         "opinion": opinion,
         "razon": str(datos.get("razon", "")).strip(),
-        "modelo": modelo,
+        "modelo": f"{proveedor}:{modelo_usado}",
     }

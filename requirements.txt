@@ -6,4 +6,5 @@ pdfplumber
 gspread
 google-auth
 rapidfuzz
-anthropic
+openai
+google-genai

@@ -113,11 +113,12 @@ def cargar_historico():
 comparador = cargar_comparador()
 historico = cargar_historico()
 
-# Revisa una sola vez si hay una API key de Anthropic configurada
-# (Secrets: anthropic_api_key, o variable de entorno ANTHROPIC_API_KEY).
-# Si no hay, la casilla de "Activar revisión con IA" en la barra
-# lateral se muestra deshabilitada y la app sigue funcionando normal
-# sin esta capa opcional.
+# Revisa una sola vez si hay una API key de IA configurada -- acepta
+# Gemini (Secrets: gemini_api_key) o OpenAI (Secrets: openai_api_key),
+# lo que esté disponible primero. Si no hay ninguna, la casilla de
+# "Activar revisión con IA" en la barra lateral se muestra
+# deshabilitada y la app sigue funcionando normal sin esta capa
+# opcional.
 ia_disponible = revision_ia.ia_disponible()
 
 # Intenta traer el dato mas reciente del INPC directo de la API de INEGI.
@@ -1766,12 +1767,12 @@ with st.sidebar:
         value=ia_disponible,
         disabled=not ia_disponible,
         help=(
-            "Para coincidencias de confianza BAJA, le pide a Claude "
+            "Para coincidencias de confianza BAJA, le pide a la IA "
             "que confirme si de verdad es el mismo material. Para "
             "partidas sin ningún dato de referencia, da una opinión "
             "orientativa (NO un precio verificado) sobre si el precio "
             "cotizado suena razonable. Requiere una API key de "
-            "Anthropic configurada en Secrets."
+            "Gemini o de OpenAI configurada en Secrets."
         ),
     )
 
@@ -1779,7 +1780,7 @@ with st.sidebar:
 
         st.caption(
             "Revisión con IA no conectada. Falta configurar "
-            "anthropic_api_key en Secrets."
+            "gemini_api_key u openai_api_key en Secrets."
         )
 
     if historico is None:
