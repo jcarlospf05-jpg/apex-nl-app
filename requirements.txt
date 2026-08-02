@@ -8,3 +8,4 @@ google-auth
 rapidfuzz
 openai
 google-genai
+plotly

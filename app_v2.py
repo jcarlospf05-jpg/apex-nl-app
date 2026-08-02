@@ -37,6 +37,7 @@ import unicodedata
 from pathlib import Path
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from comparador_multifuente_v2 import ComparadorMultiFuente
@@ -2476,6 +2477,89 @@ if archivo is not None:
                         "officedocument.spreadsheetml.sheet"
                     ),
                 )
+
+                # ==========================================================
+                # GRÁFICA RESUMEN (mismo conteo de arriba, en dona con %)
+                # ==========================================================
+
+                orden_categorias = [
+                    "ALTO",
+                    "BAJO",
+                    "EN MERCADO",
+                    "SIN DATOS SUFICIENTES",
+                ]
+
+                nombres_categorias = {
+                    "ALTO": "Alto",
+                    "BAJO": "Bajo",
+                    "EN MERCADO": "En mercado",
+                    "SIN DATOS SUFICIENTES": "Sin datos",
+                }
+
+                # Mismos colores que ya se usan para resaltar la tabla,
+                # asi la grafica se ve consistente con "RESULTADO FINAL".
+                colores_categorias = {
+                    "ALTO": "#f7c1c1",
+                    "BAJO": "#ffe699",
+                    "EN MERCADO": "#c6e0b4",
+                    "SIN DATOS SUFICIENTES": "#d9d9d9",
+                }
+
+                etiquetas_grafica = []
+                valores_grafica = []
+                colores_grafica = []
+
+                for categoria in orden_categorias:
+                    conteo = int(
+                        resumen_veredictos.get(
+                            categoria, 0
+                        )
+                    )
+                    if conteo > 0:
+                        etiquetas_grafica.append(
+                            nombres_categorias[categoria]
+                        )
+                        valores_grafica.append(conteo)
+                        colores_grafica.append(
+                            colores_categorias[categoria]
+                        )
+
+                if valores_grafica:
+
+                    st.subheader(
+                        "Distribución de resultados"
+                    )
+
+                    figura_resumen = go.Figure(
+                        data=[
+                            go.Pie(
+                                labels=etiquetas_grafica,
+                                values=valores_grafica,
+                                marker=dict(
+                                    colors=colores_grafica,
+                                    line=dict(
+                                        color="#ffffff",
+                                        width=2,
+                                    ),
+                                ),
+                                textinfo="label+percent+value",
+                                hole=0.45,
+                            )
+                        ]
+                    )
+
+                    figura_resumen.update_layout(
+                        showlegend=True,
+                        margin=dict(
+                            t=10, b=10, l=10, r=10
+                        ),
+                        height=380,
+                    )
+
+                    st.plotly_chart(
+                        figura_resumen,
+                        use_container_width=True,
+                    )
 
     except Exception as error:
 
