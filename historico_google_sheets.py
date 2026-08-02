@@ -61,7 +61,14 @@ SCOPES = [
 ]
 
 COLUMNAS = ['fecha_carga', 'proyecto', 'proveedor', 'concepto', 'concepto_norm',
-            'unidad', 'unidad_norm', 'precio_unitario', 'cluster_id']
+            'unidad', 'unidad_norm', 'precio_unitario', 'cluster_id',
+            'resultado_final', 'diferencia_pct']
+
+# Columnas que se agregaron despues de que el histórico ya estaba en uso.
+# Si algun llamador (o una hoja vieja) no las trae, se rellenan en blanco
+# en vez de tronar -- asi una cotizacion guardada sin pasar por la
+# revision completa (ALTO/BAJO/% diferencia) no rompe el guardado.
+COLUMNAS_OPCIONALES = ['resultado_final', 'diferencia_pct']
 
 NUM_RE = re.compile(r'\d+(?:\.\d+)?')
 
@@ -160,6 +167,10 @@ class HistoricoGoogleSheets:
         faltantes = {'concepto', 'unidad', 'precio_unitario'} - set(nuevo.columns)
         if faltantes:
             raise ValueError(f"Faltan columnas obligatorias: {faltantes}")
+
+        for col in COLUMNAS_OPCIONALES:
+            if col not in nuevo.columns:
+                nuevo[col] = None
 
         nuevo['concepto_norm'] = nuevo['concepto'].map(normalize_text)
         nuevo['unidad_norm'] = nuevo['unidad'].map(normalize_unit)

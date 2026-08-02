@@ -2388,13 +2388,29 @@ if archivo is not None:
                     filas
                 )
 
-                cotizacion_historico = cotizacion[
+                # Se arma desde "tabla" (no desde "cotizacion" cruda) para
+                # que el histórico también guarde el RESULTADO FINAL y el
+                # % de diferencia que ya se calcularon -- así, más
+                # adelante, se puede ver qué tan alto o bajo llegó a estar
+                # cotizado un concepto en su momento, no solo el precio
+                # plano.
+                cotizacion_historico = tabla[
                     [
-                        "concepto",
-                        "unidad",
-                        "precio_unitario",
+                        "Concepto",
+                        "Unidad",
+                        "Precio cotizado",
+                        "RESULTADO FINAL",
+                        "% Diferencia vs referencia",
                     ]
-                ].copy()
+                ].rename(
+                    columns={
+                        "Concepto": "concepto",
+                        "Unidad": "unidad",
+                        "Precio cotizado": "precio_unitario",
+                        "RESULTADO FINAL": "resultado_final",
+                        "% Diferencia vs referencia": "diferencia_pct",
+                    }
+                ).copy()
 
                 if (
                     historico is not None
