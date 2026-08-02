@@ -2191,6 +2191,23 @@ if archivo is not None:
                         if valor
                     ]
 
+                    # Precio(s) de referencia de las mismas fuentes que sí
+                    # cuentan para el veredicto (se excluyen las que la IA
+                    # rechazó) -- sirve para calcular el % de diferencia
+                    # de la partida contra el mercado.
+                    referencias_precio = [
+                        valor
+                        for valor in (
+                            nl.get("precio_mediana_ajustada")
+                            if not nl_rechazado_por_ia
+                            else None,
+                            cdmx.get("precio_referencia")
+                            if not cdmx_rechazado_por_ia
+                            else None,
+                        )
+                        if valor
+                    ]
+
                     if historico is not None:
 
                         consulta_historico = (
@@ -2248,6 +2265,15 @@ if archivo is not None:
                                     ]
                                 )
 
+                                if consulta_historico.get(
+                                    "precio_mediana"
+                                ):
+                                    referencias_precio.append(
+                                        consulta_historico[
+                                            "precio_mediana"
+                                        ]
+                                    )
+
                     if clasificaciones:
 
                         conteo = {
@@ -2276,6 +2302,45 @@ if archivo is not None:
                         ] = (
                             "SIN DATOS SUFICIENTES"
                         )
+
+                    # % de diferencia del precio cotizado contra el
+                    # promedio de los precios de referencia que sí
+                    # contaron para el veredicto (positivo = más caro
+                    # que el mercado, negativo = más barato). Si no hubo
+                    # ninguna fuente confiable, se deja en blanco -- no
+                    # hay con qué comparar.
+                    if referencias_precio:
+
+                        precio_referencia_promedio = (
+                            sum(referencias_precio)
+                            / len(referencias_precio)
+                        )
+
+                        if precio_referencia_promedio:
+
+                            fila[
+                                "% Diferencia vs referencia"
+                            ] = round(
+                                (
+                                    precio
+                                    - precio_referencia_promedio
+                                )
+                                / precio_referencia_promedio
+                                * 100,
+                                1,
+                            )
+
+                        else:
+
+                            fila[
+                                "% Diferencia vs referencia"
+                            ] = None
+
+                    else:
+
+                        fila[
+                            "% Diferencia vs referencia"
+                        ] = None
 
                     filas.append(
                         fila
@@ -2417,12 +2482,40 @@ if archivo is not None:
 
                     return ""
 
+                def resaltar_diferencia(valor):
+
+                    if valor is None or pd.isna(valor):
+                        return ""
+
+                    if valor > 0:
+                        return "color: #c0392b"
+
+                    if valor < 0:
+                        return "color: #1e8449"
+
+                    return ""
+
                 st.dataframe(
                     tabla.style.map(
                         resaltar,
                         subset=[
                             "RESULTADO FINAL"
                         ],
+                    ).map(
+                        resaltar_diferencia,
+                        subset=[
+                            "% Diferencia vs referencia"
+                        ],
+                    ).format(
+                        {
+                            "% Diferencia vs referencia": (
+                                lambda v: (
+                                    f"{v:+.1f}%"
+                                    if pd.notna(v)
+                                    else ""
+                                )
+                            )
+                        }
                     ),
                     use_container_width=True,
                     height=min(
