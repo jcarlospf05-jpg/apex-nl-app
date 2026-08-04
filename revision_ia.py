@@ -119,9 +119,60 @@ def _obtener_cliente(api_key=None, proveedor_forzado=None):
     return proveedor, cliente
 
 
+_clientes_cache = {"clientes": None, "intentado": False}
+
+
+def _obtener_clientes(api_key_gemini=None, api_key_openai=None):
+    """Regresa una lista ordenada de (proveedor, cliente) con TODOS los
+    proveedores que tengan una API key configurada -- Gemini primero,
+    OpenAI (ChatGPT de la empresa) despues. A diferencia de
+    _obtener_cliente() (que solo regresa UNO), esta lista completa es
+    la que permite el respaldo automatico: si Gemini se queda sin
+    cuota a la mitad de una revision, se reintenta con OpenAI en vez
+    de dejar esos matches sin revisar."""
+    usar_cache = api_key_gemini is None and api_key_openai is None
+    if usar_cache and _clientes_cache["intentado"]:
+        return _clientes_cache["clientes"]
+
+    clientes = []
+
+    key_gemini = api_key_gemini or os.environ.get("GEMINI_API_KEY") or _leer_secret("gemini_api_key")
+    if key_gemini:
+        try:
+            from google import genai
+
+            clientes.append(("gemini", genai.Client(api_key=key_gemini)))
+        except Exception:
+            pass
+
+    key_openai = api_key_openai or os.environ.get("OPENAI_API_KEY") or _leer_secret("openai_api_key")
+    if key_openai:
+        try:
+            import openai
+
+            clientes.append(("openai", openai.OpenAI(api_key=key_openai)))
+        except Exception:
+            pass
+
+    if usar_cache:
+        _clientes_cache["intentado"] = True
+        _clientes_cache["clientes"] = clientes
+
+    return clientes
+
+
+def proveedores_disponibles() -> list:
+    """Nombres de los proveedores de IA activos ahora mismo (ej.
+    ['gemini', 'openai']) -- lo usa la barra lateral de la app para
+    mostrar si hay respaldo configurado."""
+    return [proveedor for proveedor, _ in _obtener_clientes()]
+
+
 def ia_disponible(api_key=None) -> bool:
-    proveedor, cliente = _obtener_cliente(api_key)
-    return cliente is not None
+    if api_key is not None:
+        proveedor, cliente = _obtener_cliente(api_key)
+        return cliente is not None
+    return len(_obtener_clientes()) > 0
 
 
 def _llamar_gemini(cliente, prompt, modelo, max_tokens):
@@ -196,6 +247,26 @@ def _llamar_ia(proveedor, cliente, prompt, modelo=None, max_tokens=250):
     return None, modelo
 
 
+def _llamar_ia_con_respaldo(prompt, max_tokens=250, modelo=None):
+    """Igual que _llamar_ia, pero si hay MAS DE UN proveedor de IA
+    configurado (ej. Gemini y tambien el ChatGPT/OpenAI de la
+    empresa), intenta primero con Gemini y, si falla -- ya agoto sus
+    reintentos por rate limit, o cualquier otro error --, automatica-
+    mente reintenta la MISMA peticion con el siguiente proveedor
+    disponible en vez de rendirse. Antes, si Gemini se quedaba sin
+    cuota a la mitad de una cotizacion grande, esos matches se
+    quedaban sin revisar aunque hubiera una segunda API key
+    configurada; con esto se aprovecha automaticamente.
+
+    Regresa (texto, proveedor_usado, modelo_usado) -- proveedor_usado
+    es None si ningun proveedor disponible logro responder."""
+    for proveedor, cliente in _obtener_clientes():
+        texto, modelo_usado = _llamar_ia(proveedor, cliente, prompt, modelo=modelo, max_tokens=max_tokens)
+        if texto:
+            return texto, proveedor, modelo_usado
+    return None, None, None
+
+
 def _extraer_json(texto):
     """La respuesta puede traer texto alrededor del JSON aunque se le
     pida limpio; esto saca el primer bloque {...} valido."""
@@ -232,8 +303,7 @@ def revisar_coincidencia_debil(
     o la llamada fallo -- en ese caso quien llama debe seguir
     tratando el match como BAJA sin cambiar nada.
     """
-    proveedor, cliente = _obtener_cliente(api_key)
-    if cliente is None:
+    if not _obtener_clientes(api_key):
         return None
 
     prompt = (
@@ -259,7 +329,7 @@ def revisar_coincidencia_debil(
         "verdad no se puede saber con la informacion dada."
     )
 
-    texto, modelo_usado = _llamar_ia(proveedor, cliente, prompt, modelo=modelo, max_tokens=200)
+    texto, proveedor, modelo_usado = _llamar_ia_con_respaldo(prompt, max_tokens=200, modelo=modelo)
     datos = _extraer_json(texto)
     if not datos or "veredicto" not in datos:
         return None
@@ -292,8 +362,7 @@ def opinar_sin_datos(
     'NO_PUEDO_OPINAR', 'razon': str, 'modelo': str}, o None si la IA
     no esta disponible o la llamada fallo.
     """
-    proveedor, cliente = _obtener_cliente(api_key)
-    if cliente is None:
+    if not _obtener_clientes(api_key):
         return None
 
     prompt = (
@@ -318,7 +387,7 @@ def opinar_sin_datos(
         "una opinion responsable sin mas contexto."
     )
 
-    texto, modelo_usado = _llamar_ia(proveedor, cliente, prompt, modelo=modelo, max_tokens=200)
+    texto, proveedor, modelo_usado = _llamar_ia_con_respaldo(prompt, max_tokens=200, modelo=modelo)
     datos = _extraer_json(texto)
     if not datos or "opinion" not in datos:
         return None
@@ -357,8 +426,7 @@ def revisar_coincidencias_debiles_lote(items, api_key=None, modelo=None):
     completa falla, regresa {} (diccionario vacio, no None, para que
     quien llama pueda seguir iterando sin checar por None).
     """
-    proveedor, cliente = _obtener_cliente(api_key)
-    if cliente is None or not items:
+    if not items or not _obtener_clientes(api_key):
         return {}
 
     lineas = []
@@ -393,7 +461,7 @@ def revisar_coincidencias_debiles_lote(items, api_key=None, modelo=None):
     )
 
     max_tokens = min(4000, 150 + 120 * len(items))
-    texto, modelo_usado = _llamar_ia(proveedor, cliente, prompt, modelo=modelo, max_tokens=max_tokens)
+    texto, proveedor, modelo_usado = _llamar_ia_con_respaldo(prompt, max_tokens=max_tokens, modelo=modelo)
     datos = _extraer_json(texto)
     if not datos or "resultados" not in datos or not isinstance(datos["resultados"], list):
         return {}
@@ -426,8 +494,7 @@ def opinar_sin_datos_lote(items, api_key=None, modelo=None):
     Regresa dict {id: {'opinion':..., 'razon':..., 'modelo':...}} --
     solo incluye los ids que la IA logro responder.
     """
-    proveedor, cliente = _obtener_cliente(api_key)
-    if cliente is None or not items:
+    if not items or not _obtener_clientes(api_key):
         return {}
 
     lineas = []
@@ -461,7 +528,7 @@ def opinar_sin_datos_lote(items, api_key=None, modelo=None):
     )
 
     max_tokens = min(4000, 150 + 130 * len(items))
-    texto, modelo_usado = _llamar_ia(proveedor, cliente, prompt, modelo=modelo, max_tokens=max_tokens)
+    texto, proveedor, modelo_usado = _llamar_ia_con_respaldo(prompt, max_tokens=max_tokens, modelo=modelo)
     datos = _extraer_json(texto)
     if not datos or "resultados" not in datos or not isinstance(datos["resultados"], list):
         return {}

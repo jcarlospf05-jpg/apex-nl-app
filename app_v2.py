@@ -1789,6 +1789,29 @@ with st.sidebar:
             "gemini_api_key u openai_api_key en Secrets."
         )
 
+    else:
+
+        _proveedores_ia = revision_ia.proveedores_disponibles()
+
+        if len(_proveedores_ia) > 1:
+
+            st.caption(
+                "Revisión con IA: Gemini con respaldo automático en "
+                "OpenAI (ChatGPT) si Gemini se queda sin cuota."
+            )
+
+        elif "openai" in _proveedores_ia:
+
+            st.caption("Revisión con IA: OpenAI (ChatGPT).")
+
+        else:
+
+            st.caption(
+                "Revisión con IA: Gemini. Agrega también "
+                "'openai_api_key' en Secrets para tener respaldo "
+                "automático si se acaba la cuota de Gemini."
+            )
+
     if historico is None:
 
         st.caption(
@@ -2179,17 +2202,17 @@ if archivo is not None:
                         "Importe": renglon.get("importe"),
                         "Origen": renglon.get("origen"),
                         "Match NL": nl.get("match"),
-                        "Confianza NL": nl.get("confianza"),
+                        "Confiabilidad NL": nl.get("confianza"),
                         "Año del dato NL": nl.get("anio_dato_mas_reciente"),
                         "Precio mediana NL (original)": nl.get("precio_mediana"),
                         "Precio mediana NL (ajustado hoy)": nl.get(
                             "precio_mediana_ajustada"
                         ),
-                        "Veredicto NL": nl.get("clasificacion"),
+                        "Resultado de confiabilidad NL": nl.get("clasificacion"),
                         "Match CDMX": cdmx.get("match"),
-                        "Confianza CDMX": cdmx.get("confianza"),
+                        "Confiabilidad CDMX": cdmx.get("confianza"),
                         "Precio referencia CDMX": cdmx.get("precio_referencia"),
-                        "Veredicto CDMX": cdmx.get("clasificacion"),
+                        "Resultado de confiabilidad CDMX": cdmx.get("clasificacion"),
                     }
 
                     revision_ia_nl = nl.get("revision_ia")
@@ -2212,9 +2235,9 @@ if archivo is not None:
                     # (ej. límite de la cuenta gratuita), no debe contar para el
                     # resultado final -- es más seguro tratarlo como no
                     # confirmado que confiar en un match que nunca se validó. Se
-                    # deja visible en su columna de detalle (Veredicto NL /
-                    # Veredicto CDMX) para que quede claro qué se descartó y por
-                    # qué.
+                    # deja visible en su columna de detalle (Resultado de
+                    # confiabilidad NL / Resultado de confiabilidad CDMX) para
+                    # que quede claro qué se descartó y por qué.
                     nl_rechazado_por_ia, motivo_descarte_nl = (
                         _revision_ia_descarta(nl, usar_ia)
                     )
@@ -2222,15 +2245,15 @@ if archivo is not None:
                         _revision_ia_descarta(cdmx, usar_ia)
                     )
 
-                    if nl_rechazado_por_ia and fila.get("Veredicto NL"):
-                        fila["Veredicto NL"] = (
-                            f"{fila['Veredicto NL']} "
+                    if nl_rechazado_por_ia and fila.get("Resultado de confiabilidad NL"):
+                        fila["Resultado de confiabilidad NL"] = (
+                            f"{fila['Resultado de confiabilidad NL']} "
                             f"(descartado: {motivo_descarte_nl})"
                         )
 
-                    if cdmx_rechazado_por_ia and fila.get("Veredicto CDMX"):
-                        fila["Veredicto CDMX"] = (
-                            f"{fila['Veredicto CDMX']} "
+                    if cdmx_rechazado_por_ia and fila.get("Resultado de confiabilidad CDMX"):
+                        fila["Resultado de confiabilidad CDMX"] = (
+                            f"{fila['Resultado de confiabilidad CDMX']} "
                             f"(descartado: {motivo_descarte_cdmx})"
                         )
 
@@ -2270,7 +2293,7 @@ if archivo is not None:
 
                         fila["Match histórico interno"] = consulta_historico["match"]
 
-                        fila["Confianza histórico interno"] = consulta_historico.get(
+                        fila["Confiabilidad histórico interno"] = consulta_historico.get(
                             "confianza"
                         )
 
@@ -2302,7 +2325,7 @@ if archivo is not None:
                                 f"(descartado: {motivo_descarte_historico})"
                             )
 
-                        fila["Veredicto histórico"] = veredicto_historico
+                        fila["Resultado de confiabilidad histórico interno"] = veredicto_historico
 
                         if (
                             consulta_historico.get("clasificacion")

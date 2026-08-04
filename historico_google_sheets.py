@@ -51,6 +51,7 @@ from comparador_multifuente_v2 import (
     nivel_confianza,
     UMBRAL_CONFIANZA_BAJA,
     es_diferencia_extrema,
+    banda_en_mercado,
 )
 from rapidfuzz import fuzz  # se sigue usando fuzz.token_set_ratio en _homologar_uno
 # Nota: ya no se importa revision_ia aqui -- la revision con IA de matches
@@ -243,7 +244,12 @@ class HistoricoGoogleSheets:
             'precio_max': float(grupo['precio_unitario'].max()),
         }
         if precio_cotizado is not None and len(grupo) >= 2:
-            low, high = grupo['precio_unitario'].quantile(0.25), grupo['precio_unitario'].quantile(0.75)
+            # "EN MERCADO" = dentro de +/-5% de la mediana del clúster (ver
+            # MARGEN_EN_MERCADO en comparador_multifuente_v2.py), igual que
+            # NL y CDMX -- antes esto usaba percentiles p25-p75, que daban
+            # una banda distinta segun que tan dispersos estuvieran los
+            # precios de ese concepto en el histórico.
+            low, high = banda_en_mercado(out['precio_mediana'])
             out['clasificacion'] = clasificar(precio_cotizado, low, high)
         elif precio_cotizado is not None:
             out['clasificacion'] = None

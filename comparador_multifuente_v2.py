@@ -665,6 +665,20 @@ def clasificar(precio: float, low: float, high: float) -> str:
     return 'EN MERCADO'
 
 
+# Margen fijo (+/-) alrededor del precio de referencia para considerarse
+# "EN MERCADO" -- pedido explicito de direccion en vez de las bandas
+# anteriores (percentiles p25-p75 en NL, +/-15% en CDMX, +/-10% en
+# historico): un solo numero, igual en las tres fuentes, mas facil de
+# explicar en una junta que "depende de que tan dispersos esten los
+# precios historicos de ese concepto".
+MARGEN_EN_MERCADO = 0.05
+
+
+def banda_en_mercado(precio_referencia: float, margen: float = MARGEN_EN_MERCADO):
+    """Regresa (banda_baja, banda_alta) = precio_referencia +/- margen."""
+    return precio_referencia * (1 - margen), precio_referencia * (1 + margen)
+
+
 # Si el precio cotizado esta a mas de este multiplo del precio de
 # referencia (para arriba o para abajo), se manda a revision de IA aunque
 # el match tenga confianza ALTA/MEDIA -- un texto parecido no garantiza
@@ -882,7 +896,11 @@ class ComparadorMultiFuente:
             factor = factor_ajuste(anio_dato) if ajustar_inflacion else 1.0
             p25_uso = ajustar_precio(row['precio_p25'], anio_dato) if ajustar_inflacion else float(row['precio_p25'])
             p75_uso = ajustar_precio(row['precio_p75'], anio_dato) if ajustar_inflacion else float(row['precio_p75'])
-            veredicto = clasificar(precio_cotizado, p25_uso, p75_uso)
+            mediana_uso = ajustar_precio(row['precio_mediana'], anio_dato) if ajustar_inflacion else float(row['precio_mediana'])
+            # "EN MERCADO" = dentro de +/-5% del precio mediano de
+            # referencia (ver MARGEN_EN_MERCADO), no de la banda p25-p75.
+            banda_baja, banda_alta = banda_en_mercado(mediana_uso)
+            veredicto = clasificar(precio_cotizado, banda_baja, banda_alta)
             resultado['fuentes']['nl_historico'] = {
                 'match': row['concepto_homologado'], 'score': round(score, 1),
                 'confianza': confianza,
@@ -894,11 +912,12 @@ class ComparadorMultiFuente:
                 'ajuste_inflacion_aplicado': ajustar_inflacion,
                 'factor_ajuste_inpc': round(factor, 4),
                 'precio_p25_ajustado': p25_uso, 'precio_p75_ajustado': p75_uso,
-                'precio_mediana_ajustada': ajustar_precio(row['precio_mediana'], anio_dato) if ajustar_inflacion else float(row['precio_mediana']),
+                'precio_mediana_ajustada': mediana_uso,
+                'banda_baja': round(banda_baja, 2), 'banda_alta': round(banda_alta, 2),
                 'referencia_ajuste': f'INPC INEGI, {anio_dato} -> {_inflacion.ETIQUETA_ACTUAL} ({FUENTE_INPC})' if ajustar_inflacion else None,
                 'clasificacion': veredicto,
             }
-            precio_ref_nl = resultado['fuentes']['nl_historico']['precio_mediana_ajustada']
+            precio_ref_nl = mediana_uso
             diferencia_extrema_nl = es_diferencia_extrema(precio_cotizado, precio_ref_nl)
 
             if confianza == 'BAJA':
@@ -931,7 +950,7 @@ class ComparadorMultiFuente:
         if m:
             score, row, confianza = m
             precio_ref = float(row['precio_unitario'])
-            low, high = precio_ref * 0.85, precio_ref * 1.15
+            low, high = banda_en_mercado(precio_ref)
             resultado['fuentes']['cdmx_gobierno'] = {
                 'match': row['concepto'], 'score': round(score, 1), 'clave': row['clave'],
                 'confianza': confianza,
@@ -971,7 +990,7 @@ class ComparadorMultiFuente:
                     'match': row['concepto'], 'score': round(score, 1),
                     'confianza': confianza,
                     'precio_historico': precio_hist_ragasa,
-                    'clasificacion': clasificar(precio_cotizado, precio_hist_ragasa * 0.9, precio_hist_ragasa * 1.1),
+                    'clasificacion': clasificar(precio_cotizado, *banda_en_mercado(precio_hist_ragasa)),
                 }
                 diferencia_extrema_ragasa = es_diferencia_extrema(precio_cotizado, precio_hist_ragasa)
                 if confianza == 'BAJA' or diferencia_extrema_ragasa:
