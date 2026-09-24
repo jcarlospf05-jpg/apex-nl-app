@@ -1,11 +1,7 @@
 streamlit
 pandas
 openpyxl
-xlrd
-pdfplumber
+rapidfuzz
 gspread
 google-auth
-rapidfuzz
-openai
-google-genai
-plotly
+requests
