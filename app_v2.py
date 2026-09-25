@@ -1845,6 +1845,21 @@ with st.sidebar:
                 "automático si se acaba la cuota de Gemini."
             )
 
+    revisar_todo_con_ia = st.checkbox(
+        "Revisar con IA TODAS las coincidencias, no solo las dudosas",
+        value=False,
+        disabled=not (ia_disponible and usar_ia),
+        help=(
+            "Por default la IA solo revisa las coincidencias de "
+            "confianza BAJA o con diferencia de precio extrema (así "
+            "rinde más la cuota gratuita). Actívalo para que la IA "
+            "confirme TODAS las coincidencias, incluso las de "
+            "confianza ALTA/MEDIA, por si acaso -- usa muchas más "
+            "llamadas a la IA y agota la cuota gratuita más rápido "
+            "en cotizaciones grandes."
+        ),
+    )
+
     if busqueda_ia_disponible:
 
         st.caption(
@@ -2203,7 +2218,16 @@ if archivo is not None:
                             )
 
                         for clave_fuente, fuente_dict, nombre_fuente in fuentes_a_revisar:
-                            if fuente_dict.get("motivo") and fuente_dict.get("match"):
+                            # Por default solo se manda a revisión la
+                            # coincidencia si ya venía marcada como dudosa
+                            # (confianza BAJA o diferencia de precio
+                            # extrema). Con "revisar_todo_con_ia" activado,
+                            # se manda CUALQUIER coincidencia con match,
+                            # sin importar su confianza -- para que la IA
+                            # confirme también las que ya parecían seguras.
+                            if fuente_dict.get("match") and (
+                                fuente_dict.get("motivo") or revisar_todo_con_ia
+                            ):
                                 items_revision.append(
                                     {
                                         "id": f"{indice}:{clave_fuente}",
@@ -2620,6 +2644,14 @@ if archivo is not None:
                     # veredicto (positivo = más caro que el mercado, negativo =
                     # más barato). Si no hubo ninguna fuente confiable, se deja
                     # en blanco -- no hay con qué comparar.
+                    # ------------------------------------------------------------
+                    # Precio sugerido para negociar + ahorro potencial: pensado
+                    # para que quien negocie con el proveedor tenga, de un
+                    # vistazo, contra qué precio comparar y cuánto se podría
+                    # ahorrar si la partida está cara -- pedido explícito para
+                    # que la tabla sirva de verdad para negociar, no solo para
+                    # diagnosticar.
+                    # ------------------------------------------------------------
                     if referencias_precio:
 
                         precio_referencia_promedio = (
@@ -2634,6 +2666,18 @@ if archivo is not None:
                                 * 100,
                                 1,
                             )
+                            fila["Precio sugerido (negociación)"] = round(
+                                precio_referencia_promedio, 2
+                            )
+
+                            _cantidad = renglon.get("cantidad")
+                            _diferencia_unitaria = precio - precio_referencia_promedio
+                            if _cantidad and _diferencia_unitaria > 0:
+                                fila["Ahorro potencial"] = round(
+                                    _diferencia_unitaria * _cantidad, 2
+                                )
+                            else:
+                                fila["Ahorro potencial"] = 0.0
 
                         else:
 
@@ -2746,8 +2790,14 @@ if archivo is not None:
                     "RESULTADO FINAL"
                 ].value_counts()
 
-                c1, c2, c3, c4, c5 = st.columns(
-                    5
+                _ahorro_potencial_total = (
+                    tabla["Ahorro potencial"].sum()
+                    if "Ahorro potencial" in tabla.columns
+                    else 0
+                )
+
+                c1, c2, c3, c4, c5, c6 = st.columns(
+                    6
                 )
 
                 c1.metric(
@@ -2797,6 +2847,18 @@ if archivo is not None:
                         )
                     ),
                     help="No se encontró ninguna referencia confiable para comparar esta partida.",
+                )
+
+                c6.metric(
+                    "💰 Ahorro potencial",
+                    f"${_ahorro_potencial_total:,.0f}",
+                    help=(
+                        "Suma de (precio cotizado - precio sugerido) × "
+                        "cantidad, solo en las partidas donde el precio "
+                        "cotizado está por encima del precio de "
+                        "referencia -- lo que se podría negociar a la "
+                        "baja si se logra el precio sugerido."
+                    ),
                 )
 
                 # ----------------------------------------------------------
@@ -3013,6 +3075,16 @@ if archivo is not None:
 
                 else:
 
+                    # Vista simple, pero con los 4 veredictos por
+                    # separado (uno por fuente) en vez de un solo
+                    # combinado -- pedido explícito: un solo número
+                    # combinado escondía CÓMO se llegó a él (ej. "ALTO"
+                    # con -4% de diferencia, porque salía de promediar
+                    # fuentes con criterios distintos, algo genuinamente
+                    # confuso). Aquí cada veredicto va pegado a su propia
+                    # diferencia, sin el resto del detalle (texto del
+                    # match, confianza, precio de referencia) que sí
+                    # trae la vista avanzada.
                     _columnas_simples = [
                         columna
                         for columna in (
@@ -3021,43 +3093,85 @@ if archivo is not None:
                             "Unidad",
                             "Cantidad",
                             "Precio cotizado",
-                            "RESULTADO FINAL",
-                            "% Diferencia vs referencia",
+                            "Precio sugerido (negociación)",
+                            "Ahorro potencial",
+                            "Resultado NL",
+                            "% Diferencia NL",
+                            "Resultado CDMX",
+                            "% Diferencia CDMX",
+                            "Resultado histórico",
+                            "% Diferencia histórico",
+                            "Resultado IA internet",
+                            "% Diferencia IA internet",
                             "Opinión IA (sin datos verificados)",
                         )
                         if columna in tabla.columns
                     ]
                     tabla_simple = tabla[_columnas_simples].rename(
                         columns={
-                            "RESULTADO FINAL": "Veredicto",
-                            "% Diferencia vs referencia": "% Diferencia",
+                            "Resultado NL": "NL",
+                            "% Diferencia NL": "% Dif. NL",
+                            "Resultado CDMX": "CDMX",
+                            "% Diferencia CDMX": "% Dif. CDMX",
+                            "Resultado histórico": "Histórico",
+                            "% Diferencia histórico": "% Dif. histórico",
+                            "Resultado IA internet": "IA internet",
+                            "% Diferencia IA internet": "% Dif. IA internet",
                             "Opinión IA (sin datos verificados)": "Comentario de la IA",
                         }
                     )
 
-                    _subset_veredicto = (
-                        ["Veredicto"] if "Veredicto" in tabla_simple.columns else []
-                    )
-                    _subset_diferencia = (
-                        ["% Diferencia"] if "% Diferencia" in tabla_simple.columns else []
-                    )
-                    _formato_simple = (
-                        {
-                            "% Diferencia": lambda v: (
-                                f"{v:+.1f}%" if pd.notna(v) else ""
-                            )
-                        }
-                        if _subset_diferencia
-                        else {}
+                    _subset_veredictos_simple = [
+                        columna
+                        for columna in ("NL", "CDMX", "Histórico", "IA internet")
+                        if columna in tabla_simple.columns
+                    ]
+                    _subset_diferencias_simple = [
+                        columna
+                        for columna in (
+                            "% Dif. NL",
+                            "% Dif. CDMX",
+                            "% Dif. histórico",
+                            "% Dif. IA internet",
+                        )
+                        if columna in tabla_simple.columns
+                    ]
+                    _formato_simple = {
+                        columna: (
+                            lambda v: f"{v:+.1f}%" if pd.notna(v) else ""
+                        )
+                        for columna in _subset_diferencias_simple
+                    }
+                    if "Precio sugerido (negociación)" in tabla_simple.columns:
+                        _formato_simple["Precio sugerido (negociación)"] = (
+                            lambda v: f"${v:,.2f}" if pd.notna(v) else ""
+                        )
+                    if "Ahorro potencial" in tabla_simple.columns:
+                        _formato_simple["Ahorro potencial"] = (
+                            lambda v: f"${v:,.2f}" if pd.notna(v) and v else ""
+                        )
+
+                    def _resaltar_ahorro(valor):
+                        if pd.notna(valor) and valor > 0:
+                            return "background-color: #fdebd0; color: #9c5700; font-weight: 600"
+                        return ""
+
+                    _subset_ahorro = (
+                        ["Ahorro potencial"]
+                        if "Ahorro potencial" in tabla_simple.columns
+                        else []
                     )
 
                     st.dataframe(
                         tabla_simple.style.map(
                             resaltar,
-                            subset=_subset_veredicto,
+                            subset=_subset_veredictos_simple,
                         ).map(
                             resaltar_diferencia,
-                            subset=_subset_diferencia,
+                            subset=_subset_diferencias_simple,
+                        ).map(
+                            _resaltar_ahorro,
+                            subset=_subset_ahorro,
                         ).format(_formato_simple),
                         use_container_width=True,
                         height=min(
@@ -3069,11 +3183,18 @@ if archivo is not None:
                     )
 
                     st.caption(
-                        "\"Veredicto\" combina lo que dijeron las 4 fuentes "
-                        "(NL, CDMX, histórico interno e IA en internet) en "
-                        "un solo resultado por mayoría. ¿Quieres ver por qué "
-                        "se llegó a cada uno? Activa la vista avanzada de "
-                        "arriba."
+                        "\"Precio sugerido\" es el promedio de las "
+                        "referencias que sí encontraron precio para esa "
+                        "partida -- el número con el que negociar. "
+                        "\"Ahorro potencial\" resaltado en naranja es lo "
+                        "que se podría ahorrar por partida si se logra "
+                        "ese precio. A la derecha, un veredicto por "
+                        "fuente (NL, CDMX, histórico interno, IA en "
+                        "internet) con su % de diferencia -- \"todavía "
+                        "no hay\" significa que esa fuente no encontró "
+                        "nada para esta partida. ¿Quieres ver con qué "
+                        "texto hizo match cada una y su confiabilidad? "
+                        "Activa la vista avanzada de arriba."
                     )
 
                 buffer = io.BytesIO()

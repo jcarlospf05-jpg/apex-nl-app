@@ -7,20 +7,20 @@ para el precio de referencia. Lo que hace esta capa es ayudar a
 JUZGAR los casos que el comparador de texto (rapidfuzz) no puede
 resolver bien por si solo:
 
-  1. Coincidencias "BAJA confianza": el texto se parece pero no esta
-     claro si es el mismo material o una coincidencia de palabras
-     genericas (ej. "TUBERIA DE 6 DE DIAMETRO" pegandole por
-     casualidad a varias medidas distintas de aislamiento). Aqui la
-     IA revisa el candidato y dice si de verdad es el mismo concepto
-     o no, con una razon breve.
+  1. Coincidencias que se mandan a revision (por default, solo las de
+     confianza BAJA o con precio muy alejado -- "dudosas"; si se activa
+     "revisar todo" en la app, se manda CUALQUIER coincidencia con
+     match, sin importar su confianza): el texto se parece pero no esta
+     claro si es el mismo material, o simplemente se quiere una segunda
+     opinion "por si acaso". Aqui la IA revisa el candidato y dice si de
+     verdad es el mismo concepto o no, con una razon breve.
 
-  2. Partidas SIN NINGUN dato de referencia (ningun match en NL,
-     CDMX ni historico interno): la IA puede dar una opinion
-     orientativa de si el precio cotizado suena razonable para ese
-     tipo de material/equipo, basada en su conocimiento general --
-     pero esto NUNCA se presenta como un precio de mercado
-     verificado, siempre queda marcado como "opinion de IA, no dato
-     verificado".
+  2. Partidas SIN NINGUN dato de referencia (ningun match en NL, CDMX ni
+     historico interno): la IA puede dar una opinion orientativa de si
+     el precio cotizado suena razonable para ese tipo de material/
+     equipo, basada en su conocimiento general -- pero esto NUNCA se
+     presenta como un precio de mercado verificado, siempre queda
+     marcado como "opinion de IA, no dato verificado".
 
 SOBRE EL PROVEEDOR DE IA: en Ragasa el uso de Claude (Anthropic) esta
 bloqueado por politica de la empresa, y todavia no esta confirmado si
@@ -32,13 +32,15 @@ cual termine aprobado:
   - Gemini (Google):  Secrets -> gemini_api_key  (o env GEMINI_API_KEY)
   - OpenAI (ChatGPT):  Secrets -> openai_api_key  (o env OPENAI_API_KEY)
 
-Si hay las dos, se prefiere Gemini. Si no hay ninguna, o falta
-instalar el paquete correspondiente (`google-genai` / `openai`), o la
-llamada falla por cualquier motivo (sin internet, rate limit, etc.),
-todas las funciones de este modulo regresan None sin tronar la app --
-exactamente el mismo patron que ya usan ajuste_inflacion.py (token de
-INEGI) y historico_google_sheets.py (credenciales de Google): la app
-sigue funcionando normal, solo sin esta capa extra.
+Si hay las dos, se prefiere Gemini, con respaldo automatico en OpenAI
+si Gemini falla a la mitad de una revision (ej. se acabo la cuota). Si
+no hay ninguna key, o falta instalar el paquete correspondiente
+(`google-genai` / `openai`), o la llamada falla por cualquier motivo
+(sin internet, rate limit, etc.), todas las funciones de este modulo
+regresan None sin tronar la app -- exactamente el mismo patron que ya
+usan ajuste_inflacion.py (token de INEGI) y historico_google_sheets.py
+(credenciales de Google): la app sigue funcionando normal, solo sin
+esta capa extra.
 """
 import json
 import os
@@ -48,11 +50,11 @@ MODELO_GEMINI_POR_DEFECTO = "gemini-3.5-flash-lite"
 MODELO_OPENAI_POR_DEFECTO = "gpt-5-mini"
 
 # En cotizaciones grandes se hacen muchas llamadas seguidas a la IA (una
-# por cada match de confianza BAJA). El nivel gratuito de Gemini/OpenAI
-# tiene un limite de solicitudes por minuto -- sin este reintento, en
-# cuanto se topa ese limite a la mitad del lote, todas las llamadas
-# restantes fallan silenciosamente y esos matches dudosos se quedan sin
-# revisar (se ven identicos a uno ya confirmado, pero nadie los revisó).
+# por cada match que se manda a revision). El nivel gratuito de Gemini/
+# OpenAI tiene un limite de solicitudes por minuto -- sin este reintento,
+# en cuanto se topa ese limite a la mitad del lote, todas las llamadas
+# restantes fallan silenciosamente y esos matches se quedan sin revisar
+# (se ven identicos a uno ya confirmado, pero nadie los revisó).
 _REINTENTOS_POR_RATE_LIMIT = 3
 _ESPERA_BASE_SEGUNDOS = 3
 
@@ -64,29 +66,29 @@ def _es_error_rate_limit(excepcion) -> bool:
         for pista in ("429", "rate limit", "rate_limit", "quota", "resource_exhausted", "resource exhausted", "too many requests")
     )
 
-_proveedor_cache = {"proveedor": None, "cliente": None, "intentado": False}
 
 # ----------------------------------------------------------------------
-# Diagnostico: guarda el ULTIMO error real que arrojo una llamada a la IA
-# (Gemini u OpenAI), para poder mostrarlo en la app quien revisa entienda
-# POR QUE la IA no ayudo (ej. "modelo no encontrado", "403 permission
-# denied", "429 quota exceeded") en vez de solo ver un mensaje generico de
-# "no se pudo completar". Antes los errores se tragaban en silencio.
+# Diagnostico: guarda el ULTIMO error real de la revision con IA, para
+# poder mostrarlo en la app (ej. "429 quota exceeded", "modelo no
+# encontrado") en vez de solo decir "no se pudo revisar" sin explicar
+# por que.
 # ----------------------------------------------------------------------
-_ultimo_error = {"proveedor": None, "mensaje": None}
+_ultimo_error = {"mensaje": None, "proveedor": None}
 
 
-def _registrar_error(proveedor, error):
-    _ultimo_error["proveedor"] = proveedor
+def _registrar_error(error, proveedor=None):
     _ultimo_error["mensaje"] = str(error)
+    _ultimo_error["proveedor"] = proveedor
 
 
 def ultimo_error():
-    """Regresa {'proveedor': str|None, 'mensaje': str|None} con el ULTIMO
-    error real que dio la IA en esta sesion, o valores None si no ha
-    habido ninguno. Util para mostrar en la app un diagnostico real en
-    vez de adivinar por que la revision con IA no funciono."""
+    """Regresa {'mensaje': str|None, 'proveedor': str|None} con el
+    ultimo error real que dio la revision con IA en esta sesion, o
+    {'mensaje': None, ...} si no ha habido ninguno."""
     return dict(_ultimo_error)
+
+
+_proveedor_cache = {"proveedor": None, "cliente": None, "intentado": False}
 
 
 def _leer_secret(nombre):
@@ -119,7 +121,8 @@ def _obtener_cliente(api_key=None, proveedor_forzado=None):
 
                 cliente = genai.Client(api_key=key)
                 proveedor = "gemini"
-            except Exception:
+            except Exception as error:
+                _registrar_error(error, "gemini")
                 cliente = None
 
     if cliente is None and proveedor_forzado in (None, "openai"):
@@ -130,7 +133,8 @@ def _obtener_cliente(api_key=None, proveedor_forzado=None):
 
                 cliente = openai.OpenAI(api_key=key)
                 proveedor = "openai"
-            except Exception:
+            except Exception as error:
+                _registrar_error(error, "openai")
                 cliente = None
 
     if usar_cache:
@@ -164,8 +168,8 @@ def _obtener_clientes(api_key_gemini=None, api_key_openai=None):
             from google import genai
 
             clientes.append(("gemini", genai.Client(api_key=key_gemini)))
-        except Exception:
-            pass
+        except Exception as error:
+            _registrar_error(error, "gemini")
 
     key_openai = api_key_openai or os.environ.get("OPENAI_API_KEY") or _leer_secret("openai_api_key")
     if key_openai:
@@ -173,8 +177,8 @@ def _obtener_clientes(api_key_gemini=None, api_key_openai=None):
             import openai
 
             clientes.append(("openai", openai.OpenAI(api_key=key_openai)))
-        except Exception:
-            pass
+        except Exception as error:
+            _registrar_error(error, "openai")
 
     if usar_cache:
         _clientes_cache["intentado"] = True
@@ -212,7 +216,6 @@ def _llamar_gemini(cliente, prompt, modelo, max_tokens):
             return respuesta.text
         except Exception as error:
             ultimo_error_local = error
-            _registrar_error("gemini", error)
             if _es_error_rate_limit(error) and intento < _REINTENTOS_POR_RATE_LIMIT - 1:
                 time.sleep(_ESPERA_BASE_SEGUNDOS * (intento + 1))
                 continue
@@ -225,7 +228,7 @@ def _llamar_gemini(cliente, prompt, modelo, max_tokens):
         )
         return respuesta.text
     except Exception as error:
-        _registrar_error("gemini", error)
+        _registrar_error(error, "gemini")
         return None
 
 
@@ -240,7 +243,6 @@ def _llamar_openai(cliente, prompt, modelo, max_tokens):
             )
             return respuesta.choices[0].message.content
         except Exception as error:
-            _registrar_error("openai", error)
             if _es_error_rate_limit(error) and intento < _REINTENTOS_POR_RATE_LIMIT - 1:
                 time.sleep(_ESPERA_BASE_SEGUNDOS * (intento + 1))
                 continue
@@ -254,14 +256,14 @@ def _llamar_openai(cliente, prompt, modelo, max_tokens):
         )
         return respuesta.choices[0].message.content
     except Exception as error:
-        _registrar_error("openai", error)
+        _registrar_error(error, "openai")
         return None
 
 
 def _llamar_ia(proveedor, cliente, prompt, modelo=None, max_tokens=250):
     # Pequeña pausa antes de cada llamada para repartir las solicitudes
     # en el tiempo y no disparar el limite por minuto del nivel gratuito
-    # cuando una cotizacion tiene muchos matches BAJA seguidos.
+    # cuando una cotizacion tiene muchos matches seguidos a revisar.
     time.sleep(1)
 
     if proveedor == "gemini":
@@ -286,7 +288,10 @@ def _llamar_ia_con_respaldo(prompt, max_tokens=250, modelo=None):
 
     Regresa (texto, proveedor_usado, modelo_usado) -- proveedor_usado
     es None si ningun proveedor disponible logro responder."""
-    for proveedor, cliente in _obtener_clientes():
+    clientes = _obtener_clientes()
+    if not clientes:
+        return None, None, None
+    for proveedor, cliente in clientes:
         texto, modelo_usado = _llamar_ia(proveedor, cliente, prompt, modelo=modelo, max_tokens=max_tokens)
         if texto:
             return texto, proveedor, modelo_usado
@@ -320,14 +325,14 @@ def revisar_coincidencia_debil(
     modelo=None,
 ):
     """
-    Para un match ya encontrado con confianza BAJA: le pide a la IA
-    que confirme o rechace si de verdad es el mismo material/concepto
-    (no solo texto parecido).
+    Para un match ya encontrado: le pide a la IA que confirme o
+    rechace si de verdad es el mismo material/concepto (no solo texto
+    parecido).
 
     Regresa dict {'veredicto': 'CONFIRMA'|'RECHAZA'|'NO_SEGURO',
     'razon': str, 'modelo': str}, o None si la IA no esta disponible
     o la llamada fallo -- en ese caso quien llama debe seguir
-    tratando el match como BAJA sin cambiar nada.
+    tratando el match como no revisado sin cambiar nada.
     """
     if not _obtener_clientes(api_key):
         return None
@@ -337,10 +342,8 @@ def revisar_coincidencia_debil(
         "en Mexico (civil, electrico, mecanico/HVAC, plomeria, "
         "acabados).\n\n"
         "Un sistema de busqueda por texto encontro esta posible "
-        "coincidencia, pero con confianza BAJA (el texto se parece "
-        "pero no es seguro que sea el mismo material). Tu trabajo es "
-        "decidir si de verdad es el MISMO concepto/material, no solo "
-        "texto parecido.\n\n"
+        "coincidencia. Tu trabajo es decidir si de verdad es el MISMO "
+        "concepto/material, no solo texto parecido.\n\n"
         f'Partida cotizada: "{descripcion_cotizada}" (unidad: {unidad})\n'
         f'Candidato encontrado en la base de {fuente}: '
         f'"{descripcion_candidato}"\n\n'
@@ -430,10 +433,10 @@ def opinar_sin_datos(
 
 
 # Tamano de lote para las funciones "_lote": en vez de una llamada a la
-# IA por cada partida dudosa (lento, y facil que se acabe el limite de
-# solicitudes por minuto del nivel gratuito), se agrupan varias en un
+# IA por cada partida a revisar (lento, y facil que se acabe el limite
+# de solicitudes por minuto del nivel gratuito), se agrupan varias en un
 # solo prompt y se pide un JSON con un resultado por cada una. Una
-# cotizacion de 30 partidas con 20 matches dudosos pasa de ~20 llamadas
+# cotizacion de 30 partidas con 20 matches a revisar pasa de ~20 llamadas
 # a ~3, y de 2-4 minutos a unos 15-20 segundos.
 TAMANO_LOTE = 8
 
@@ -441,7 +444,7 @@ TAMANO_LOTE = 8
 def revisar_coincidencias_debiles_lote(items, api_key=None, modelo=None):
     """
     Version en lote de revisar_coincidencia_debil(): revisa varios
-    matches dudosos en una sola llamada a la IA.
+    matches en una sola llamada a la IA.
 
     items: lista de dicts con las claves:
         id (cualquier identificador unico, ej. un indice),
@@ -468,10 +471,7 @@ def revisar_coincidencias_debiles_lote(items, api_key=None, modelo=None):
         "en Mexico (civil, electrico, mecanico/HVAC, plomeria, "
         "acabados).\n\n"
         "Un sistema de busqueda por texto encontro estas posibles "
-        "coincidencias, pero con confianza BAJA o con un precio muy "
-        "alejado de lo esperado (el texto se parece pero no es seguro "
-        "que sea el mismo material, o el precio no cuadra con ese "
-        "candidato). Para CADA una, decide si de verdad es el MISMO "
+        "coincidencias. Para CADA una, decide si de verdad es el MISMO "
         "concepto/material, no solo texto parecido:\n\n"
         + "\n".join(lineas) +
         "\n\nResponde SOLO con un JSON (sin texto alrededor) con este "
@@ -490,6 +490,12 @@ def revisar_coincidencias_debiles_lote(items, api_key=None, modelo=None):
     texto, proveedor, modelo_usado = _llamar_ia_con_respaldo(prompt, max_tokens=max_tokens, modelo=modelo)
     datos = _extraer_json(texto)
     if not datos or "resultados" not in datos or not isinstance(datos["resultados"], list):
+        if texto is None:
+            _registrar_error(
+                "no se pudo completar la revisión con IA (revisa el "
+                "detalle técnico arriba para la causa real)",
+                proveedor,
+            )
         return {}
 
     salida = {}
@@ -557,6 +563,13 @@ def opinar_sin_datos_lote(items, api_key=None, modelo=None):
     texto, proveedor, modelo_usado = _llamar_ia_con_respaldo(prompt, max_tokens=max_tokens, modelo=modelo)
     datos = _extraer_json(texto)
     if not datos or "resultados" not in datos or not isinstance(datos["resultados"], list):
+        if texto is None:
+            _registrar_error(
+                "no se pudo completar la opinión sobre partidas sin "
+                "datos (revisa el detalle técnico arriba para la "
+                "causa real)",
+                proveedor,
+            )
         return {}
 
     salida = {}
@@ -577,36 +590,38 @@ def opinar_sin_datos_lote(items, api_key=None, modelo=None):
 
 def debe_descartarse(fuente: dict, usar_ia: bool):
     """
-    Decide si un match que el comparador ya marco como riesgoso
-    (confianza BAJA o precio con diferencia extrema -- se detecta porque
-    trae fuente['motivo']) debe excluirse del resultado final.
+    Decide si un match debe excluirse del resultado final.
 
-    Se descarta SOLO si la IA de verdad lo reviso y dijo RECHAZA o
-    NO_SEGURO -- un rechazo explicito y fundamentado.
+    Se descarta si:
+      - se mando a revision con IA (porque era dudoso, o porque se
+        activo "revisar todo") Y la IA dijo RECHAZA o NO_SEGURO.
 
-    Si la revision con IA nunca se pudo completar (ej. la cuenta
-    gratuita se quedo sin cuota, el modelo no respondio, error de red),
-    el match NO se descarta: antes esto tiraba a la basura matches
-    validos de NL/CDMX/historico solo porque la capa OPCIONAL de IA
-    fallo, dejando la cotizacion entera en "SIN DATOS SUFICIENTES"
-    aunque si hubiera precios de referencia reales. Ahora, si la IA no
-    pudo revisar, el match se queda como estaba (con su confianza BAJA
-    o su aviso de precio extremo ya visible en la columna de detalle)
-    para que la persona lo confirme a mano -- eso es mejor que
-    esconderlo por completo.
+    Si usar_ia es False, o el match nunca se mando a revision (no
+    tiene 'motivo' de duda y tampoco se le forzo una revision, asi que
+    no hay 'revision_ia' en el diccionario), no se descarta -- se
+    comporta igual que antes de tener esta capa.
 
-    Si usar_ia es False, o el match no estaba marcado como riesgoso
-    (sin 'motivo'), no se descarta -- se comporta igual que antes de
-    tener esta capa.
+    OJO: si SÍ se mando a revision pero la llamada nunca se completo
+    (ej. se topo el limite de la cuenta gratuita), NO se descarta por
+    eso solo -- es preferible seguir confiando en el match que el
+    comparador de texto ya encontro, en vez de perder referencias de
+    precio validas solo porque la IA no pudo confirmar (esto fue un
+    problema real detectado en pruebas: partidas con match correcto
+    terminaban en "SIN DATOS SUFICIENTES" nada mas porque la IA se
+    quedo sin cuota a la mitad de la revision).
 
     Regresa (True/False, razon_para_mostrar_o_None).
     """
-    if not usar_ia or not fuente.get('motivo'):
+    si_se_mando_a_revision = bool(fuente.get('motivo')) or 'revision_ia' in fuente
+
+    if not usar_ia or not si_se_mando_a_revision:
         return False, None
 
     revision = fuente.get('revision_ia')
 
     if revision is None:
+        # Se mando a revisar pero la IA no respondio -- no se descarta
+        # por precaución, se sigue tratando como un match valido.
         return False, None
 
     veredicto = revision.get('veredicto')
