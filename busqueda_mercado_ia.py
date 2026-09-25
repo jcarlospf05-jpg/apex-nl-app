@@ -293,14 +293,32 @@ def _buscar_precio_tavily_item(item, api_key=None):
     primera_url = resultados[0].get("url", "") if resultados else ""
     primer_titulo = resultados[0].get("title", "") if resultados else ""
 
-    precio = _extraer_precio_de_texto(resumen)
-    if precio is None:
-        for r in resultados:
-            precio = _extraer_precio_de_texto(r.get("content", ""))
-            if precio is not None:
-                primera_url = r.get("url", "") or primera_url
-                primer_titulo = r.get("title", "") or primer_titulo
-                break
+    # OJO -- bug real encontrado en pruebas: antes, si el resumen de
+    # Tavily no traía un precio, se buscaba un numero con pinta de precio
+    # en el CONTENIDO CRUDO de los resultados de busqueda (paginas que
+    # Tavily regreso pero que pueden no tener nada que ver con la
+    # partida real si la busqueda no encontro algo relevante). Eso
+    # provoco un caso real: para un modelo de bomba inventado para
+    # pruebas, Tavily no encontro nada relevante, pero el regex agarro
+    # un numero de una pagina de criptomonedas (CoinGecko) que
+    # coincidencialmente traia "... MXN" en el texto, y ese numero
+    # se presento como si fuera el precio de mercado -- justo lo que
+    # nunca se debe hacer (inventar/adivinar un precio). Ahora SOLO se
+    # confia en el resumen que el propio Tavily redacto para responder
+    # la pregunta (resumen); si ahi no hay un precio claro, la partida
+    # se marca sin dato en vez de arriesgarse a un numero de contexto
+    # equivocado.
+    _frases_sin_precio = (
+        "no disponible", "not available", "no encontr", "no se encontr",
+        "no data", "sin informacion", "sin información", "no information",
+        "could not find", "no pricing", "no price",
+    )
+    resumen_normalizado = resumen.lower()
+    hay_indicio_de_sin_dato = any(
+        frase in resumen_normalizado for frase in _frases_sin_precio
+    )
+
+    precio = None if hay_indicio_de_sin_dato else _extraer_precio_de_texto(resumen)
 
     nota = resumen or "no se encontró un resumen con precio claro en los resultados"
 
