@@ -251,15 +251,79 @@ _PATRON_PRECIO_SUFIJO = re.compile(
 )
 
 
-def _extraer_precio_de_texto(texto):
+# Tercer problema real encontrado en pruebas, distinto a los dos
+# anteriores: el resumen puede mencionar MAS DE UN precio, cada uno con
+# una unidad distinta (ej. "$80-$220 MXN por metro cuadrado" Y "$363.44
+# MXN el jornal diario" en la misma respuesta, para una partida cotizada
+# por JORNAL). Antes se tomaba el PRIMER numero que apareciera en el
+# texto sin importar de que unidad hablaba, lo que comparo un precio por
+# M2 contra un precio cotizado por JORNAL -- unidades distintas, mismo
+# error de fondo que comparar peras con manzanas, y generaba un
+# "carísimo" o "ahorro potencial" completamente irreal.
+#
+# Ahora se buscan TODOS los precios que aparecen en el texto (no solo el
+# primero) junto con las palabras que los rodean, y se prefiere el que
+# tenga cerca alguna palabra clave de la MISMA unidad que se cotizo
+# (ej. "jornal"/"por dia" para JORNAL, "m2"/"metro cuadrado" para M2).
+# Si no se encuentra ningun precio con contexto de la unidad correcta,
+# se usa el primero como respaldo (mismo comportamiento de antes) porque
+# es mejor una aproximacion que nada, pero ya no se ignora a ciegas la
+# unidad cuando SI hay pistas de cual precio es el correcto.
+_MAPA_UNIDAD_PALABRAS_CLAVE = {
+    "JORNAL": ["jornal", "por dia", "por día", "diario", "al dia", "al día", "jornada"],
+    "M2": ["m2", "m²", "metro cuadrado", "metros cuadrados"],
+    "M3": ["m3", "m³", "metro cubico", "metro cúbico", "metros cubicos", "metros cúbicos"],
+    "ML": ["ml", "metro lineal", "metros lineales"],
+    "KG": ["kg", "kilogramo", "kilogramos", "kilo", "por kilo"],
+    "TON": ["ton", "tonelada", "toneladas"],
+    "PZA": ["pza", "pieza", "unidad", "c/u", "cada uno", "por pieza"],
+    "LOTE": ["lote"],
+    "SERVICIO": ["servicio"],
+    "GLOBAL": ["global", "por lote"],
+    "LT": ["litro", "litros", "por litro"],
+}
+
+
+_SEPARADOR_ORACIONES = re.compile(r"(?<=[.!?;])\s+|\n+")
+
+
+def _extraer_precio_de_texto(texto, unidad=None):
     if not texto:
         return None
-    m = _PATRON_PRECIO_PREFIJO.search(texto) or _PATRON_PRECIO_SUFIJO.search(texto)
-    if not m:
+
+    # Se busca primero DENTRO DE CADA ORACION por separado (no una
+    # ventana de caracteres a ciegas): una ventana de caracteres fija
+    # puede "ver" la palabra clave de la SIGUIENTE oracion y confundirse
+    # (probado: con una ventana de 40 caracteres, "$220 MXN por metro
+    # cuadrado. El jornal..." hacia que el precio por M2 se marcara como
+    # si fuera el del JORNAL, solo porque la palabra "jornal" caia
+    # dentro de la ventana de la oracion anterior). Restringir la
+    # busqueda a la MISMA oracion evita ese arrastre.
+    palabras_clave = _MAPA_UNIDAD_PALABRAS_CLAVE.get((unidad or "").strip().upper(), [])
+    if palabras_clave:
+        for oracion in _SEPARADOR_ORACIONES.split(texto):
+            oracion_lower = oracion.lower()
+            if not any(palabra in oracion_lower for palabra in palabras_clave):
+                continue
+            m = _PATRON_PRECIO_PREFIJO.search(oracion) or _PATRON_PRECIO_SUFIJO.search(oracion)
+            if m:
+                try:
+                    return float(m.group(1).replace(",", ""))
+                except ValueError:
+                    continue
+
+    # Ninguna oracion con precio tenia una palabra clave de la unidad
+    # cotizada (o la unidad no esta en el mapa de arriba): se usa el
+    # primer precio que aparecio en todo el texto, igual que antes.
+    coincidencias = sorted(
+        list(_PATRON_PRECIO_PREFIJO.finditer(texto))
+        + list(_PATRON_PRECIO_SUFIJO.finditer(texto)),
+        key=lambda m: m.start(),
+    )
+    if not coincidencias:
         return None
-    crudo = m.group(1).replace(",", "")
     try:
-        return float(crudo)
+        return float(coincidencias[0].group(1).replace(",", ""))
     except ValueError:
         return None
 
@@ -361,7 +425,11 @@ def _buscar_precio_tavily_item(item, api_key=None):
         frase in resumen_normalizado for frase in _frases_sin_precio
     )
 
-    precio = None if hay_indicio_de_sin_dato else _extraer_precio_de_texto(resumen)
+    precio = (
+        None
+        if hay_indicio_de_sin_dato
+        else _extraer_precio_de_texto(resumen, item.get("unidad"))
+    )
 
     # Verificación del código/modelo distintivo (ver comentario arriba de
     # _codigos_distintivos): si la partida menciona un modelo específico
