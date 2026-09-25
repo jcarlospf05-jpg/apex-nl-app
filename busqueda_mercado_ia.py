@@ -264,6 +264,40 @@ def _extraer_precio_de_texto(texto):
         return None
 
 
+# ------------------------------------------------------------------
+# Segunda alucinacion real encontrada en pruebas, distinta a la del
+# regex: aunque el resumen de Tavily SI trae un precio con formato
+# correcto, el propio resumen puede estar mal -- afirma con seguridad
+# que un modelo especifico (ej. "AquaFlow ZX-500", un modelo inventado
+# a proposito para una prueba) cuesta tanto, citando una fuente que en
+# realidad es sobre un producto GENERICO distinto (ej. "Bomba
+# sumergible domestica 1Hp"), no sobre ese modelo. Tavily arma su
+# resumen con un modelo de lenguaje propio a partir de los resultados,
+# y ese modelo puede "completar" con seguridad algo que los resultados
+# reales no respaldan.
+#
+# Para blindarse contra esto: si la descripcion de la partida trae un
+# codigo/modelo distintivo (letras+numeros pegados, ej. "ZX-500",
+# "2X40A"), ese codigo debe aparecer LITERALMENTE en el texto real que
+# Tavily regreso (titulos/contenido de los resultados, o el propio
+# resumen) antes de confiar en el precio. Si la partida no trae ningun
+# codigo asi (descripciones genericas como "Mano de obra"), no aplica
+# esta verificacion -- no hay nada distintivo que confirmar.
+# ------------------------------------------------------------------
+_PATRON_CODIGO_DISTINTIVO = re.compile(r"[A-Za-z]{1,10}-?\d{2,6}[A-Za-z]{0,3}")
+
+
+def _codigos_distintivos(descripcion):
+    return {
+        re.sub(r"[\s\-]", "", codigo).upper()
+        for codigo in _PATRON_CODIGO_DISTINTIVO.findall(descripcion or "")
+    }
+
+
+def _texto_plano_normalizado(*fragmentos):
+    return re.sub(r"[\s\-]", "", " ".join(fragmentos)).upper()
+
+
 def _buscar_precio_tavily_item(item, api_key=None):
     try:
         import requests
@@ -329,7 +363,38 @@ def _buscar_precio_tavily_item(item, api_key=None):
 
     precio = None if hay_indicio_de_sin_dato else _extraer_precio_de_texto(resumen)
 
-    nota = resumen or "no se encontró un resumen con precio claro en los resultados"
+    # Verificación del código/modelo distintivo (ver comentario arriba de
+    # _codigos_distintivos): si la partida menciona un modelo específico
+    # y ese código no aparece en NINGÚN lado del texto real que Tavily
+    # regresó, no se confía en el precio aunque el resumen lo afirme con
+    # seguridad -- es la señal más confiable de que el resumen está
+    # atribuyendo el precio de un producto genérico al modelo específico
+    # que se buscaba.
+    codigo_no_verificado = False
+    if precio is not None:
+        codigos = _codigos_distintivos(item["descripcion"])
+        if codigos:
+            texto_disponible = _texto_plano_normalizado(
+                resumen,
+                *[
+                    f"{r.get('title', '')} {r.get('content', '')}"
+                    for r in resultados
+                ],
+            )
+            if not any(codigo in texto_disponible for codigo in codigos):
+                codigo_no_verificado = True
+                precio = None
+
+    if codigo_no_verificado:
+        nota = (
+            (resumen + " " if resumen else "")
+            + "[verificación: el modelo/código exacto de esta partida no "
+            "se encontró en ninguna fuente real consultada -- se "
+            "descarta el precio por precaución, aunque el resumen lo "
+            "mencionaba]"
+        )
+    else:
+        nota = resumen or "no se encontró un resumen con precio claro en los resultados"
 
     return {
         "precio_mxn": precio,
