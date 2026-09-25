@@ -66,6 +66,28 @@ def _es_error_rate_limit(excepcion) -> bool:
 
 _proveedor_cache = {"proveedor": None, "cliente": None, "intentado": False}
 
+# ----------------------------------------------------------------------
+# Diagnostico: guarda el ULTIMO error real que arrojo una llamada a la IA
+# (Gemini u OpenAI), para poder mostrarlo en la app quien revisa entienda
+# POR QUE la IA no ayudo (ej. "modelo no encontrado", "403 permission
+# denied", "429 quota exceeded") en vez de solo ver un mensaje generico de
+# "no se pudo completar". Antes los errores se tragaban en silencio.
+# ----------------------------------------------------------------------
+_ultimo_error = {"proveedor": None, "mensaje": None}
+
+
+def _registrar_error(proveedor, error):
+    _ultimo_error["proveedor"] = proveedor
+    _ultimo_error["mensaje"] = str(error)
+
+
+def ultimo_error():
+    """Regresa {'proveedor': str|None, 'mensaje': str|None} con el ULTIMO
+    error real que dio la IA en esta sesion, o valores None si no ha
+    habido ninguno. Util para mostrar en la app un diagnostico real en
+    vez de adivinar por que la revision con IA no funciono."""
+    return dict(_ultimo_error)
+
 
 def _leer_secret(nombre):
     try:
@@ -176,7 +198,7 @@ def ia_disponible(api_key=None) -> bool:
 
 
 def _llamar_gemini(cliente, prompt, modelo, max_tokens):
-    ultimo_error = None
+    ultimo_error_local = None
     for intento in range(_REINTENTOS_POR_RATE_LIMIT):
         try:
             respuesta = cliente.models.generate_content(
@@ -189,7 +211,8 @@ def _llamar_gemini(cliente, prompt, modelo, max_tokens):
             )
             return respuesta.text
         except Exception as error:
-            ultimo_error = error
+            ultimo_error_local = error
+            _registrar_error("gemini", error)
             if _es_error_rate_limit(error) and intento < _REINTENTOS_POR_RATE_LIMIT - 1:
                 time.sleep(_ESPERA_BASE_SEGUNDOS * (intento + 1))
                 continue
@@ -201,7 +224,8 @@ def _llamar_gemini(cliente, prompt, modelo, max_tokens):
             contents=prompt,
         )
         return respuesta.text
-    except Exception:
+    except Exception as error:
+        _registrar_error("gemini", error)
         return None
 
 
@@ -216,6 +240,7 @@ def _llamar_openai(cliente, prompt, modelo, max_tokens):
             )
             return respuesta.choices[0].message.content
         except Exception as error:
+            _registrar_error("openai", error)
             if _es_error_rate_limit(error) and intento < _REINTENTOS_POR_RATE_LIMIT - 1:
                 time.sleep(_ESPERA_BASE_SEGUNDOS * (intento + 1))
                 continue
@@ -228,7 +253,8 @@ def _llamar_openai(cliente, prompt, modelo, max_tokens):
             messages=[{"role": "user", "content": prompt}],
         )
         return respuesta.choices[0].message.content
-    except Exception:
+    except Exception as error:
+        _registrar_error("openai", error)
         return None
 
 
@@ -555,13 +581,19 @@ def debe_descartarse(fuente: dict, usar_ia: bool):
     (confianza BAJA o precio con diferencia extrema -- se detecta porque
     trae fuente['motivo']) debe excluirse del resultado final.
 
-    Se descarta si:
-      - la IA lo reviso y dijo RECHAZA o NO_SEGURO, o
-      - se activo la revision con IA pero la llamada nunca se completo
-        (ej. se topo el limite de la cuenta gratuita) -- en ese caso NO
-        hay que asumir que el match es bueno solo porque no hubo
-        respuesta; es mas seguro tratarlo como no confirmado que confiar
-        en un precio de referencia que nunca se valido.
+    Se descarta SOLO si la IA de verdad lo reviso y dijo RECHAZA o
+    NO_SEGURO -- un rechazo explicito y fundamentado.
+
+    Si la revision con IA nunca se pudo completar (ej. la cuenta
+    gratuita se quedo sin cuota, el modelo no respondio, error de red),
+    el match NO se descarta: antes esto tiraba a la basura matches
+    validos de NL/CDMX/historico solo porque la capa OPCIONAL de IA
+    fallo, dejando la cotizacion entera en "SIN DATOS SUFICIENTES"
+    aunque si hubiera precios de referencia reales. Ahora, si la IA no
+    pudo revisar, el match se queda como estaba (con su confianza BAJA
+    o su aviso de precio extremo ya visible en la columna de detalle)
+    para que la persona lo confirme a mano -- eso es mejor que
+    esconderlo por completo.
 
     Si usar_ia es False, o el match no estaba marcado como riesgoso
     (sin 'motivo'), no se descarta -- se comporta igual que antes de
@@ -575,10 +607,7 @@ def debe_descartarse(fuente: dict, usar_ia: bool):
     revision = fuente.get('revision_ia')
 
     if revision is None:
-        return True, (
-            'no se pudo completar la revisión con IA (posible límite '
-            'de la cuenta gratuita) -- se descarta por precaución'
-        )
+        return False, None
 
     veredicto = revision.get('veredicto')
 

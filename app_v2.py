@@ -2284,6 +2284,19 @@ if archivo is not None:
                         "Resultado de confiabilidad CDMX": cdmx.get("clasificacion"),
                     }
 
+                    # % de diferencia de CADA fuente por separado (no solo un
+                    # promedio combinado) -- pedido de dirección: se quiere ver
+                    # qué tan caro/barato sale el precio cotizado contra CADA
+                    # una de las 4 referencias, no solo un número combinado.
+                    _ref_nl = nl.get("precio_mediana_ajustada")
+                    fila["% Diferencia NL"] = (
+                        round((precio - _ref_nl) / _ref_nl * 100, 1) if _ref_nl else None
+                    )
+                    _ref_cdmx = cdmx.get("precio_referencia")
+                    fila["% Diferencia CDMX"] = (
+                        round((precio - _ref_cdmx) / _ref_cdmx * 100, 1) if _ref_cdmx else None
+                    )
+
                     # ------------------------------------------------------------
                     # 4ª fuente: precio de mercado encontrado por la IA en
                     # internet (búsqueda real con Google Search, no opinión de
@@ -2304,6 +2317,9 @@ if archivo is not None:
 
                         fila["Precio mercado (IA internet)"] = precio_mercado_ia
                         fila["Resultado de confiabilidad IA internet"] = clasificacion_ia_mercado
+                        fila["% Diferencia IA internet"] = round(
+                            (precio - precio_mercado_ia) / precio_mercado_ia * 100, 1
+                        )
                         fila["Fuente IA (internet)"] = (
                             busqueda_ia.get("fuente_nombre") or busqueda_ia.get("fuente_url") or ""
                         )
@@ -2435,6 +2451,11 @@ if archivo is not None:
                             )
 
                         fila["Resultado de confiabilidad histórico interno"] = veredicto_historico
+
+                        _ref_hist = consulta_historico.get("precio_mediana")
+                        fila["% Diferencia histórico"] = (
+                            round((precio - _ref_hist) / _ref_hist * 100, 1) if _ref_hist else None
+                        )
 
                         if (
                             consulta_historico.get("clasificacion")
@@ -2672,6 +2693,47 @@ if archivo is not None:
                     ),
                 )
 
+                # ----------------------------------------------------------
+                # Diagnóstico real de la IA: si se activó la revisión con IA
+                # o la búsqueda en internet y de verdad no ayudó en nada,
+                # aquí se muestra el ÚLTIMO error real que dio Gemini/OpenAI
+                # (ej. "modelo no encontrado", "permiso denegado", "se acabó
+                # la cuota") en vez de solo un mensaje genérico -- así se
+                # puede saber la causa real en lugar de adivinar.
+                # ----------------------------------------------------------
+                _error_revision = revision_ia.ultimo_error() if usar_ia else None
+                _error_busqueda = (
+                    busqueda_mercado_ia.ultimo_error()
+                    if busqueda_ia_disponible
+                    else None
+                )
+
+                if (
+                    (_error_revision and _error_revision.get("mensaje"))
+                    or (_error_busqueda and _error_busqueda.get("mensaje"))
+                ):
+
+                    with st.expander(
+                        "⚠️ La IA tuvo errores durante esta revisión "
+                        "(clic para ver el detalle técnico)"
+                    ):
+
+                        if _error_revision and _error_revision.get("mensaje"):
+                            st.caption(
+                                f"Revisión con IA "
+                                f"({_error_revision.get('proveedor') or '?'}): "
+                                f"{_error_revision['mensaje']}"
+                            )
+
+                        if _error_busqueda and _error_busqueda.get("mensaje"):
+                            st.caption(
+                                f"Búsqueda en internet (Gemini): "
+                                f"{_error_busqueda['mensaje']}"
+                            )
+
+                # Precio caro/en rango/bajo -- pedido explícito de dirección:
+                # ALTO (caro) = rojo, EN MERCADO (en rango) = amarillo,
+                # BAJO (por debajo del precio de referencia) = verde.
                 def resaltar(valor):
 
                     if valor == "ALTO":
@@ -2680,13 +2742,13 @@ if archivo is not None:
                             "color: #501313"
                         )
 
-                    if valor == "BAJO":
+                    if valor == "EN MERCADO":
                         return (
                             "background-color: #ffe699; "
                             "color: #7f6000"
                         )
 
-                    if valor == "EN MERCADO":
+                    if valor == "BAJO":
                         return (
                             "background-color: #c6e0b4; "
                             "color: #006100"
@@ -2699,6 +2761,33 @@ if archivo is not None:
                         return (
                             "background-color: #d9d9d9; "
                             "color: #595959"
+                        )
+
+                    return ""
+
+                # Confianza del TEXTO encontrado (qué tan seguro está el
+                # sistema de que el match es el mismo material) -- también
+                # pedido de dirección, en sentido contrario al de arriba:
+                # ALTA confianza = bueno = verde, BAJA confianza = hay que
+                # revisar a mano = rojo.
+                def resaltar_confianza(valor):
+
+                    if valor == "ALTA":
+                        return (
+                            "background-color: #c6e0b4; "
+                            "color: #006100"
+                        )
+
+                    if valor == "MEDIA":
+                        return (
+                            "background-color: #ffe699; "
+                            "color: #7f6000"
+                        )
+
+                    if valor == "BAJA":
+                        return (
+                            "background-color: #f7c1c1; "
+                            "color: #501313"
                         )
 
                     return ""
@@ -2716,11 +2805,26 @@ if archivo is not None:
 
                     return ""
 
-                # Se colorea también cada una de las 4 fuentes por separado
-                # (no solo el RESULTADO FINAL) para que se vea de un vistazo
-                # en qué está de acuerdo o en desacuerdo cada fuente -- pedido
-                # de dirección de que sea más fácil de entender y explicar.
-                _columnas_resaltar_fuentes = [
+                # RESULTADO FINAL (el veredicto combinado en una sola
+                # columna) se quita de la tabla que se ve en pantalla --
+                # pedido de dirección: que se muestren los 4 resultados de
+                # cada fuente por separado en vez de un solo número
+                # combinado. Sigue calculándose por dentro (se usa para las
+                # métricas de arriba, la gráfica y el histórico guardado en
+                # Google Sheets), solo no se despliega como columna aquí.
+                _columnas_ocultar_en_pantalla = [
+                    columna
+                    for columna in ("RESULTADO FINAL", "% Diferencia vs referencia")
+                    if columna in tabla.columns
+                ]
+                tabla_visible = tabla.drop(columns=_columnas_ocultar_en_pantalla)
+
+                # Se colorea cada una de las 4 fuentes por separado -- tanto
+                # el resultado de precio (caro/en rango/bajo) como la
+                # confianza del match (alta/media/baja) -- para que se vea de
+                # un vistazo en qué está de acuerdo o en desacuerdo cada
+                # fuente, sin depender de un solo veredicto combinado.
+                _columnas_resaltar_precio = [
                     columna
                     for columna in (
                         "Resultado de confiabilidad NL",
@@ -2728,31 +2832,49 @@ if archivo is not None:
                         "Resultado de confiabilidad histórico interno",
                         "Resultado de confiabilidad IA internet",
                     )
-                    if columna in tabla.columns
+                    if columna in tabla_visible.columns
                 ]
+                _columnas_resaltar_confianza = [
+                    columna
+                    for columna in (
+                        "Confiabilidad NL",
+                        "Confiabilidad CDMX",
+                        "Confiabilidad histórico interno",
+                    )
+                    if columna in tabla_visible.columns
+                ]
+                _columnas_diferencia_por_fuente = [
+                    columna
+                    for columna in (
+                        "% Diferencia NL",
+                        "% Diferencia CDMX",
+                        "% Diferencia histórico",
+                        "% Diferencia IA internet",
+                    )
+                    if columna in tabla_visible.columns
+                ]
+                _formato_diferencias = {
+                    columna: (
+                        lambda v: (
+                            f"{v:+.1f}%"
+                            if pd.notna(v)
+                            else ""
+                        )
+                    )
+                    for columna in _columnas_diferencia_por_fuente
+                }
 
                 st.dataframe(
-                    tabla.style.map(
+                    tabla_visible.style.map(
                         resaltar,
-                        subset=[
-                            "RESULTADO FINAL"
-                        ] + _columnas_resaltar_fuentes,
+                        subset=_columnas_resaltar_precio,
+                    ).map(
+                        resaltar_confianza,
+                        subset=_columnas_resaltar_confianza,
                     ).map(
                         resaltar_diferencia,
-                        subset=[
-                            "% Diferencia vs referencia"
-                        ],
-                    ).format(
-                        {
-                            "% Diferencia vs referencia": (
-                                lambda v: (
-                                    f"{v:+.1f}%"
-                                    if pd.notna(v)
-                                    else ""
-                                )
-                            )
-                        }
-                    ),
+                        subset=_columnas_diferencia_por_fuente,
+                    ).format(_formato_diferencias),
                     use_container_width=True,
                     height=min(
                         650,
@@ -2829,8 +2951,8 @@ if archivo is not None:
                 # asi la grafica se ve consistente con "RESULTADO FINAL".
                 colores_categorias = {
                     "ALTO": "#f7c1c1",
-                    "BAJO": "#ffe699",
-                    "EN MERCADO": "#c6e0b4",
+                    "EN MERCADO": "#ffe699",
+                    "BAJO": "#c6e0b4",
                     "SIN DATOS SUFICIENTES": "#d9d9d9",
                 }
 

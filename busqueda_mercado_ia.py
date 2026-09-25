@@ -19,19 +19,40 @@ un numero estimado de memoria.
 
 Para no gastar la cuota de la API rapido (la preocupacion explicita de
 direccion), se agrupan varias partidas por llamada (BATCH, igual que
-revision_ia.TAMANO_LOTE) y el resultado se cachea en la sesion de Streamlit
-por texto normalizado de la partida: si la misma cotizacion (u otra parecida)
-vuelve a traer el mismo concepto, no se vuelve a consultar a la IA.
+revision_ia.TAMANO_LOTE).
 """
 import json
 import os
 
-MODELO_POR_DEFECTO = "gemini-2.5-flash"
+# gemini-2.5-flash quedo con acceso limitado (solo cuentas que ya lo usaban
+# antes) -- una API key nueva creada en AI Studio puede no tener acceso y
+# la llamada falla en silencio. gemini-3.5-flash es el modelo vigente
+# recomendado para proyectos nuevos y soporta grounding con Google Search.
+MODELO_POR_DEFECTO = "gemini-3.5-flash"
 
 # Menos partidas por lote que revision_ia.TAMANO_LOTE (8): cada partida aqui
 # implica que el modelo dispare una o mas busquedas reales en Google, asi
 # que el prompt y la respuesta esperada son mas pesados por partida.
 TAMANO_LOTE = 5
+
+# ----------------------------------------------------------------------
+# Diagnostico: guarda el ULTIMO error real de la llamada a Gemini, para
+# poder mostrarlo en la app (ej. "404 model not found", "403 permission
+# denied: grounding requiere facturacion habilitada", "429 quota
+# exceeded") en vez de solo decir "no encontro nada" sin explicar por que.
+# ----------------------------------------------------------------------
+_ultimo_error = {"mensaje": None}
+
+
+def _registrar_error(error):
+    _ultimo_error["mensaje"] = str(error)
+
+
+def ultimo_error():
+    """Regresa {'mensaje': str|None} con el ultimo error real que dio la
+    busqueda en internet con IA en esta sesion, o None si no ha habido
+    ninguno (o si nunca se ha llamado)."""
+    return dict(_ultimo_error)
 
 
 def _leer_secret(nombre):
@@ -60,7 +81,8 @@ def _obtener_cliente(api_key=None):
             from google import genai
 
             cliente = genai.Client(api_key=key)
-        except Exception:
+        except Exception as error:
+            _registrar_error(error)
             cliente = None
 
     if usar_cache:
@@ -119,7 +141,8 @@ def buscar_precios_mercado_lote(items, api_key=None, modelo=None):
     Regresa dict {id: {'precio_mxn': float|None, 'unidad_encontrada': str,
     'fuente_nombre': str, 'fuente_url': str, 'nota': str,
     'tiene_dato': bool}} -- solo incluye los ids que el modelo devolvio.
-    Si la busqueda no esta disponible o falla, regresa {}.
+    Si la busqueda no esta disponible o falla, regresa {} (usa
+    ultimo_error() para ver por que).
     """
     cliente = _obtener_cliente(api_key)
     if not cliente or not items:
@@ -155,12 +178,17 @@ def buscar_precios_mercado_lote(items, api_key=None, modelo=None):
             contents=prompt,
             config={"tools": [{"google_search": {}}]},
         )
-    except Exception:
+    except Exception as error:
+        _registrar_error(error)
         return {}
 
     texto = getattr(respuesta, "text", None)
     datos = _extraer_json(texto)
     if not datos or "resultados" not in datos or not isinstance(datos["resultados"], list):
+        _registrar_error(
+            f"la respuesta de Gemini no traia el JSON esperado. Texto crudo: "
+            f"{(texto or '(vacio)')[:300]}"
+        )
         return {}
 
     fuentes_citadas = _fuentes_de_respuesta(respuesta)
