@@ -1846,8 +1846,10 @@ with st.sidebar:
 
         st.caption(
             "4ª fuente activa: la IA busca en internet (Google "
-            "Search real, vía Gemini) un precio de mercado para "
-            "cada partida, con la fuente citada."
+            "Search real, vía Gemini) un precio de mercado, con la "
+            "fuente citada, solo para las partidas que no tengan "
+            "ninguna referencia en NL/CDMX/histórico -- así rinde "
+            "más la cuota gratuita."
         )
 
     else:
@@ -2144,13 +2146,18 @@ if archivo is not None:
 
                 # ----------------------------------------------------------------
                 # 4ª fuente: la IA busca en internet (Google Search real, vía
-                # Gemini) un precio de mercado para CADA partida de la
-                # cotización -- a diferencia de la revisión de IA de abajo (que
-                # solo juzga matches ya encontrados), esta es una búsqueda
-                # independiente que corre siempre, tenga o no match en
-                # NL/CDMX/histórico. Se manda en lotes (busqueda_mercado_ia.
-                # TAMANO_LOTE) por la misma razón que la revisión de matches
-                # débiles: evitar 1 llamada por partida y no agotar la cuota.
+                # Gemini) un precio de mercado para cada partida.
+                #
+                # OJO: antes esto corría para TODAS las partidas sin importar si
+                # ya había match en NL/CDMX/histórico -- en cotizaciones grandes
+                # eso agota la cuota gratuita de Gemini en un par de corridas
+                # (cada búsqueda con Google Search cuesta cuota real, distinta a
+                # la de la revisión de matches débiles de abajo). Ahora la
+                # búsqueda en internet SOLO se manda para las partidas que NO
+                # tienen ningún precio de referencia todavía (ni NL, ni CDMX, ni
+                # histórico interno) -- ahí es donde de verdad hace falta, y así
+                # la cuota rinde para muchas más cotizaciones. Las partidas que
+                # ya tienen match no la necesitan: ya hay con qué comparar.
                 # ----------------------------------------------------------------
                 if busqueda_ia_disponible:
 
@@ -2161,6 +2168,12 @@ if archivo is not None:
                             "unidad": registro["unidad"],
                         }
                         for indice, registro in enumerate(fila_registros)
+                        if not registro["nl"].get("clasificacion")
+                        and not registro["cdmx"].get("clasificacion")
+                        and not (
+                            registro["consulta_historico"]
+                            and registro["consulta_historico"].get("clasificacion")
+                        )
                     ]
 
                     resultados_busqueda_mercado = {}
@@ -2332,6 +2345,17 @@ if archivo is not None:
                     _diff_ia = None
                     _resultado_ia = "todavía no hay"
 
+                    # La búsqueda en internet solo se manda cuando NINGUNA otra
+                    # fuente (NL/CDMX/histórico) encontró referencia -- así se
+                    # cuida la cuota gratuita de Gemini. Se distingue este caso
+                    # (mensaje "no hacía falta") del caso en que sí se buscó
+                    # pero no se encontró nada confiable.
+                    _tenia_otra_referencia = bool(
+                        nl.get("clasificacion")
+                        or cdmx.get("clasificacion")
+                        or (consulta_historico and consulta_historico.get("clasificacion"))
+                    )
+
                     if busqueda_ia and busqueda_ia.get("tiene_dato"):
 
                         precio_mercado_ia = busqueda_ia["precio_mxn"]
@@ -2349,6 +2373,12 @@ if archivo is not None:
                             busqueda_ia.get("fuente_nombre") or busqueda_ia.get("fuente_url") or ""
                         )
                         fila["Nota IA internet"] = busqueda_ia.get("nota", "")
+
+                    elif busqueda_ia_disponible and _tenia_otra_referencia:
+
+                        fila["Nota IA internet"] = (
+                            "no hacía falta: ya hay precio de referencia de otra fuente"
+                        )
 
                     elif busqueda_ia_disponible:
 
