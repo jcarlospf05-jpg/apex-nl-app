@@ -1086,7 +1086,25 @@ def leer_pdf(archivo):
         and len(set(claves_obra_detectadas)) >= 2
     )
 
-    if es_cotizacion_obra:
+    # OJO: antes esto vaciaba filas_validas (los renglones que el PRIMER
+    # INTENTO -- extracción real de tabla con bordes -- ya había leído
+    # BIEN) solo porque el texto de la página contiene las palabras
+    # "unidad/cantidad/precio unitario/importe" (que aparecen en el
+    # encabezado de CUALQUIER tabla de cotización, no solo en el formato
+    # de obra con descripciones multilínea) y hay 2+ números con decimales
+    # (que aparece en CUALQUIER tabla de precios). Eso hacía que una
+    # tabla perfectamente bien leída se descartara a favor del método de
+    # texto línea por línea (menos confiable: pierde renglones y a veces
+    # pega texto de títulos/encabezados a la primera partida). Ahora solo
+    # se vacía cuando el PRIMER INTENTO de plano no encontró casi nada
+    # (menos de 3 renglones) -- ahí sí es señal real de que la tabla no
+    # se pudo leer con bordes y conviene probar el método de texto.
+    # Cuando el PRIMER INTENTO sí encontró una tabla completa, se deja
+    # intacta y es la lógica de "TABLA CONFIABLE" de más abajo (que
+    # compara conteo de renglones y, si hay Subtotal declarado, también
+    # el importe total) la que decide cuál de los métodos usar -- ese
+    # mecanismo ya es más preciso que este atajo.
+    if es_cotizacion_obra and len(filas_validas) < 3:
         filas_validas = []
         paginas_detectadas = set()
 
