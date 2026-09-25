@@ -236,8 +236,17 @@ def _buscar_precios_mercado_gemini_lote(items, api_key=None, modelo=None):
 # regreso -- si no se encuentra ningun numero, se deja precio_mxn en None
 # en vez de inventarlo.
 # ----------------------------------------------------------------------
-_PATRON_PRECIO = re.compile(
-    r"\$?\s?(\d{1,3}(?:[,.]\d{3})*(?:\.\d+)?)\s*(?:mxn|pesos|mx\$|\$)",
+# Dos formas de citar un precio en el resumen: "$650" (signo ANTES del
+# numero, lo mas comun cuando Tavily cita en dolares/pesos con formato
+# tipo "$650 to $1,400 per day") o "650 MXN"/"650 pesos" (indicador
+# DESPUES del numero). Se prueban ambas formas -- se necesitaba el
+# indicador (antes o despues) para no agarrar cualquier numero suelto
+# del texto (ej. un anio, una medida) como si fuera un precio.
+_PATRON_PRECIO_PREFIJO = re.compile(
+    r"\$\s?(\d{1,3}(?:,\d{3})*(?:\.\d+)?)",
+)
+_PATRON_PRECIO_SUFIJO = re.compile(
+    r"(\d{1,3}(?:[,.]\d{3})*(?:\.\d+)?)\s*(?:mxn|pesos|mx\$)",
     re.IGNORECASE,
 )
 
@@ -245,7 +254,7 @@ _PATRON_PRECIO = re.compile(
 def _extraer_precio_de_texto(texto):
     if not texto:
         return None
-    m = _PATRON_PRECIO.search(texto)
+    m = _PATRON_PRECIO_PREFIJO.search(texto) or _PATRON_PRECIO_SUFIJO.search(texto)
     if not m:
         return None
     crudo = m.group(1).replace(",", "")
