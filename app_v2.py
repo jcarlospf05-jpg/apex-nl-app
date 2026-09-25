@@ -128,10 +128,13 @@ historico = cargar_historico()
 ia_disponible = revision_ia.ia_disponible()
 
 # La 4a fuente ("IA busca cotizaciones en internet") es independiente de la
-# revision_ia de arriba: no juzga matches existentes, busca en internet con
-# Google Search (via Gemini) un precio de mercado real para CADA partida.
-# Solo requiere gemini_api_key (el grounding con Google Search es propio de
-# Gemini). Si no esta configurada, esta fuente se omite sin tronar la app.
+# revision_ia de arriba: no juzga matches existentes, busca en internet un
+# precio de mercado real para las partidas sin otra referencia. Usa
+# Gemini + Google Search (Secrets: gemini_api_key) como motor principal y,
+# si no esta configurado o se quedo sin cuota, cae automaticamente a
+# Tavily (Secrets: tavily_api_key) como respaldo 100% gratuito (1,000
+# busquedas/mes, sin tarjeta). Si ninguna de las dos esta configurada,
+# esta fuente se omite sin tronar la app.
 busqueda_ia_disponible = busqueda_mercado_ia.busqueda_disponible()
 
 # Alias local: la logica de "cuando descartar un match riesgoso" vive en
@@ -1845,18 +1848,23 @@ with st.sidebar:
     if busqueda_ia_disponible:
 
         st.caption(
-            "4ª fuente activa: la IA busca en internet (Google "
-            "Search real, vía Gemini) un precio de mercado, con la "
-            "fuente citada, solo para las partidas que no tengan "
-            "ninguna referencia en NL/CDMX/histórico -- así rinde "
-            "más la cuota gratuita."
+            "4ª fuente activa: la IA busca en internet un precio de "
+            "mercado real, con la fuente citada, solo para las "
+            "partidas que no tengan ninguna referencia en "
+            "NL/CDMX/histórico -- así rinde más la cuota gratuita. "
+            "Usa Gemini (Google Search) como motor principal y, si "
+            "se acaba su cuota, cae automáticamente a Tavily como "
+            "respaldo 100% gratuito (1,000 búsquedas/mes, sin "
+            "tarjeta)."
         )
 
     else:
 
         st.caption(
             "4ª fuente ('IA busca cotizaciones en internet') no "
-            "conectada. Falta configurar 'gemini_api_key' en Secrets."
+            "conectada. Configura 'gemini_api_key' en Secrets, o "
+            "'tavily_api_key' (gratis, sin tarjeta, en tavily.com) "
+            "como alternativa."
         )
 
     if historico is None:
@@ -2390,7 +2398,8 @@ if archivo is not None:
                     else:
 
                         fila["Nota IA internet"] = (
-                            "4ª fuente no conectada (falta gemini_api_key en Secrets)"
+                            "4ª fuente no conectada (falta gemini_api_key o "
+                            "tavily_api_key en Secrets)"
                         )
 
                     revision_ia_nl = nl.get("revision_ia")

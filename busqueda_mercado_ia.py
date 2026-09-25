@@ -3,26 +3,32 @@ Busqueda de precios de mercado en internet con IA (4a fuente: "IA busca cotizaci
 =========================================================================================
 A diferencia de revision_ia.py (que solo JUZGA matches ya encontrados contra
 las bases de NL/CDMX/historico, o da una opinion generica basada en el
-conocimiento del modelo), este modulo hace una BUSQUEDA REAL en internet con
-Gemini usando "grounding" (Google Search integrado a la API) para encontrar
-precios de mercado actuales para cada partida, con la fuente citada.
+conocimiento del modelo), este modulo hace una BUSQUEDA REAL en internet para
+encontrar precios de mercado actuales para cada partida, con la fuente citada.
 
-Esto SOLO funciona con Gemini (el "grounding" con Google Search es una
-capacidad especifica de la API de Gemini; OpenAI no tiene un equivalente
-directo compatible con el mismo flujo), y SOLO si hay 'gemini_api_key'
-configurada en Secrets -- si no, todas las funciones regresan {} sin tronar
-la app, igual que revision_ia.py.
+Tiene DOS motores, en orden de preferencia:
 
-Nunca se inventa un precio: si el modelo no encuentra una fuente real con
-Google Search, la partida se marca como 'sin_dato' en vez de rellenarse con
-un numero estimado de memoria.
+1. Gemini con "grounding" (Google Search integrado a la API) -- requiere
+   'gemini_api_key' en Secrets. Es el mas completo: el propio modelo busca,
+   lee varias fuentes y arma un JSON estructurado por partida.
+2. Tavily (https://tavily.com) como RESPALDO GRATUITO -- requiere
+   'tavily_api_key' en Secrets (plan gratuito: 1,000 busquedas/mes, sin
+   tarjeta). Se usa automaticamente SOLO cuando Gemini no esta disponible o
+   se quedo sin cuota (error 429 u otro), para que la 4a fuente no se caiga
+   por completo solo porque se acabo la cuota de Gemini.
+
+Nunca se inventa un precio: si ninguno de los dos motores encuentra una
+fuente real con una busqueda real, la partida se marca como 'sin_dato' en
+vez de rellenarse con un numero estimado de memoria.
 
 Para no gastar la cuota de la API rapido (la preocupacion explicita de
-direccion), se agrupan varias partidas por llamada (BATCH, igual que
-revision_ia.TAMANO_LOTE).
+direccion), se agrupan varias partidas por llamada cuando el motor lo
+permite (Gemini soporta lote; Tavily se llama 1 vez por partida porque su
+API no acepta varias preguntas en una sola llamada).
 """
 import json
 import os
+import re
 
 # gemini-2.5-flash quedo con acceso limitado (solo cuentas que ya lo usaban
 # antes) -- una API key nueva creada en AI Studio puede no tener acceso y
@@ -35,11 +41,14 @@ MODELO_POR_DEFECTO = "gemini-3.5-flash"
 # que el prompt y la respuesta esperada son mas pesados por partida.
 TAMANO_LOTE = 5
 
+TAVILY_URL = "https://api.tavily.com/search"
+
 # ----------------------------------------------------------------------
-# Diagnostico: guarda el ULTIMO error real de la llamada a Gemini, para
-# poder mostrarlo en la app (ej. "404 model not found", "403 permission
-# denied: grounding requiere facturacion habilitada", "429 quota
-# exceeded") en vez de solo decir "no encontro nada" sin explicar por que.
+# Diagnostico: guarda el ULTIMO error real de la busqueda (Gemini o
+# Tavily), para poder mostrarlo en la app (ej. "404 model not found",
+# "403 permission denied: grounding requiere facturacion habilitada",
+# "429 quota exceeded") en vez de solo decir "no encontro nada" sin
+# explicar por que.
 # ----------------------------------------------------------------------
 _ultimo_error = {"mensaje": None}
 
@@ -92,8 +101,18 @@ def _obtener_cliente(api_key=None):
     return cliente
 
 
+def _obtener_tavily_key(api_key=None):
+    return api_key or os.environ.get("TAVILY_API_KEY") or _leer_secret("tavily_api_key")
+
+
+def _tavily_disponible(api_key=None) -> bool:
+    return bool(_obtener_tavily_key(api_key))
+
+
 def busqueda_disponible(api_key=None) -> bool:
-    return _obtener_cliente(api_key) is not None
+    """True si hay AL MENOS un motor de busqueda configurado (Gemini o
+    Tavily como respaldo gratuito)."""
+    return _obtener_cliente(api_key) is not None or _tavily_disponible()
 
 
 def _extraer_json(texto):
@@ -131,19 +150,10 @@ def _fuentes_de_respuesta(respuesta):
     return urls
 
 
-def buscar_precios_mercado_lote(items, api_key=None, modelo=None):
-    """
-    items: lista de dicts {id, descripcion, unidad}
-
-    Busca en internet (Google Search real, via grounding de Gemini) un
-    precio de mercado actual en Mexico/Nuevo Leon para cada partida.
-
-    Regresa dict {id: {'precio_mxn': float|None, 'unidad_encontrada': str,
-    'fuente_nombre': str, 'fuente_url': str, 'nota': str,
-    'tiene_dato': bool}} -- solo incluye los ids que el modelo devolvio.
-    Si la busqueda no esta disponible o falla, regresa {} (usa
-    ultimo_error() para ver por que).
-    """
+def _buscar_precios_mercado_gemini_lote(items, api_key=None, modelo=None):
+    """Intenta el motor principal (Gemini + Google Search grounding).
+    Regresa {} si no esta disponible o si la llamada falla (revisa
+    ultimo_error() para saber por que)."""
     cliente = _obtener_cliente(api_key)
     if not cliente or not items:
         return {}
@@ -179,14 +189,14 @@ def buscar_precios_mercado_lote(items, api_key=None, modelo=None):
             config={"tools": [{"google_search": {}}]},
         )
     except Exception as error:
-        _registrar_error(error)
+        _registrar_error(f"Gemini: {error}")
         return {}
 
     texto = getattr(respuesta, "text", None)
     datos = _extraer_json(texto)
     if not datos or "resultados" not in datos or not isinstance(datos["resultados"], list):
         _registrar_error(
-            f"la respuesta de Gemini no traia el JSON esperado. Texto crudo: "
+            f"Gemini: la respuesta no traia el JSON esperado. Texto crudo: "
             f"{(texto or '(vacio)')[:300]}"
         )
         return {}
@@ -211,5 +221,134 @@ def buscar_precios_mercado_lote(items, api_key=None, modelo=None):
             "fuente_url": str(r.get("fuente_url", "") or "") or url_generica,
             "nota": str(r.get("nota", "") or ""),
             "tiene_dato": precio is not None,
+            "motor": "Gemini (Google Search)",
         }
     return salida
+
+
+# ----------------------------------------------------------------------
+# Motor de respaldo gratuito: Tavily. No requiere tarjeta, 1,000
+# busquedas/mes gratis. A diferencia de Gemini, su API no agrupa varias
+# preguntas en una sola llamada, asi que aqui se llama una vez por
+# partida. Tavily puede regresar un resumen ya redactado (include_answer)
+# citando fuentes reales, pero no fuerza un JSON estructurado por precio,
+# asi que aqui se intenta extraer un numero en pesos del texto real que
+# regreso -- si no se encuentra ningun numero, se deja precio_mxn en None
+# en vez de inventarlo.
+# ----------------------------------------------------------------------
+_PATRON_PRECIO = re.compile(
+    r"\$?\s?(\d{1,3}(?:[,.]\d{3})*(?:\.\d+)?)\s*(?:mxn|pesos|mx\$|\$)",
+    re.IGNORECASE,
+)
+
+
+def _extraer_precio_de_texto(texto):
+    if not texto:
+        return None
+    m = _PATRON_PRECIO.search(texto)
+    if not m:
+        return None
+    crudo = m.group(1).replace(",", "")
+    try:
+        return float(crudo)
+    except ValueError:
+        return None
+
+
+def _buscar_precio_tavily_item(item, api_key=None):
+    try:
+        import requests
+    except Exception as error:
+        _registrar_error(f"Tavily (respaldo gratuito): falta la libreria 'requests' ({error})")
+        return None
+
+    key = _obtener_tavily_key(api_key)
+    if not key:
+        return None
+
+    consulta = (
+        f'precio de "{item["descripcion"]}" ({item["unidad"]}) en México, '
+        "pesos MXN, proveedor o ferretería actual"
+    )
+    try:
+        resp = requests.post(
+            TAVILY_URL,
+            json={
+                "api_key": key,
+                "query": consulta,
+                "search_depth": "basic",
+                "include_answer": True,
+                "max_results": 5,
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        datos = resp.json()
+    except Exception as error:
+        _registrar_error(f"Tavily (respaldo gratuito): {error}")
+        return None
+
+    resumen = datos.get("answer") or ""
+    resultados = datos.get("results") or []
+    primera_url = resultados[0].get("url", "") if resultados else ""
+    primer_titulo = resultados[0].get("title", "") if resultados else ""
+
+    precio = _extraer_precio_de_texto(resumen)
+    if precio is None:
+        for r in resultados:
+            precio = _extraer_precio_de_texto(r.get("content", ""))
+            if precio is not None:
+                primera_url = r.get("url", "") or primera_url
+                primer_titulo = r.get("title", "") or primer_titulo
+                break
+
+    nota = resumen or "no se encontró un resumen con precio claro en los resultados"
+
+    return {
+        "precio_mxn": precio,
+        "unidad_encontrada": item["unidad"],
+        "fuente_nombre": (primer_titulo or "Búsqueda web (Tavily, respaldo gratuito)")[:120],
+        "fuente_url": primera_url or "",
+        "nota": nota[:300],
+        "tiene_dato": precio is not None,
+        "motor": "Tavily (respaldo gratuito)",
+    }
+
+
+def _buscar_precios_mercado_tavily_lote(items, api_key=None):
+    salida = {}
+    for it in items:
+        resultado = _buscar_precio_tavily_item(it, api_key=api_key)
+        if resultado is not None:
+            salida[it["id"]] = resultado
+    return salida
+
+
+def buscar_precios_mercado_lote(items, api_key=None, modelo=None, tavily_api_key=None):
+    """
+    items: lista de dicts {id, descripcion, unidad}
+
+    Busca en internet un precio de mercado actual en Mexico/Nuevo Leon
+    para cada partida. Intenta primero Gemini (grounding con Google
+    Search); si Gemini no esta configurado o falla (ej. se acabo la
+    cuota), cae automaticamente a Tavily como respaldo gratuito.
+
+    Regresa dict {id: {'precio_mxn': float|None, 'unidad_encontrada': str,
+    'fuente_nombre': str, 'fuente_url': str, 'nota': str,
+    'tiene_dato': bool, 'motor': str}} -- solo incluye los ids que se
+    lograron consultar. Si ningun motor esta disponible o ambos fallan,
+    regresa {} (usa ultimo_error() para ver por que).
+    """
+    if not items:
+        return {}
+
+    salida = _buscar_precios_mercado_gemini_lote(items, api_key=api_key, modelo=modelo)
+    if salida:
+        return salida
+
+    # Gemini no dio nada (no configurado, cuota agotada, u otro error) --
+    # se intenta el respaldo gratuito antes de rendirse.
+    if _tavily_disponible(tavily_api_key):
+        return _buscar_precios_mercado_tavily_lote(items, api_key=tavily_api_key)
+
+    return {}

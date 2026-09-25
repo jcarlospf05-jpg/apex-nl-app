@@ -9,3 +9,4 @@ rapidfuzz
 openai
 google-genai
 plotly
+requests
