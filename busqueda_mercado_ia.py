@@ -370,12 +370,21 @@ def _buscar_precio_tavily_item(item, api_key=None):
     # seguridad -- es la señal más confiable de que el resumen está
     # atribuyendo el precio de un producto genérico al modelo específico
     # que se buscaba.
+    # IMPORTANTE: el resumen (`resumen`) NO se incluye en esta
+    # verificación a propósito, aunque parezca que "ya trae el código".
+    # Tavily redacta su resumen repitiendo palabras de la PREGUNTA que se
+    # le mandó (que ya incluye el código, porque es la partida cotizada)
+    # -- así que el código *siempre* va a aparecer en el resumen, sea o
+    # no real el dato. Comprobar contra el resumen sería revisar la
+    # afirmación contra sí misma. Por eso solo cuentan los TÍTULOS y
+    # CONTENIDO de los resultados de búsqueda reales (las páginas web que
+    # Tavily de verdad encontró): si el código no aparece ahí, es que
+    # ninguna página real habla de ese modelo específico.
     codigo_no_verificado = False
     if precio is not None:
         codigos = _codigos_distintivos(item["descripcion"])
         if codigos:
             texto_disponible = _texto_plano_normalizado(
-                resumen,
                 *[
                     f"{r.get('title', '')} {r.get('content', '')}"
                     for r in resultados
