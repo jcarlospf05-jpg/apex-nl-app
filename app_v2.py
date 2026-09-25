@@ -1624,6 +1624,160 @@ def leer_pdf(archivo):
         filas_validas = filas_obra
     else:
         filas_validas = filas_tabla
+
+    # ======================================================
+    # QUINTO INTENTO: PRESUPUESTOS DE OBRA TIPO OPUS/NEODATA
+    # CON NÚMEROS "PARTIDOS" POR EL PDF
+    # ======================================================
+    #
+    # Algunos PDFs digitales sí contienen texto, pero pdfplumber extrae
+    # visualmente un número como 250.00 de esta manera:
+    #
+    #     "2 50.00"
+    #
+    # y un importe como 11,832.50 como:
+    #
+    #     "$ 1 1,832.50"
+    #
+    # Eso hacía fallar los patrones anteriores aunque el PDF NO estuviera
+    # escaneado. Este fallback solo corre si los métodos anteriores no
+    # encontraron partidas, por lo que no altera los formatos que ya
+    # funcionaban.
+    if not filas_validas:
+
+        filas_presupuesto_obra = []
+
+        patron_presupuesto_obra = re.compile(
+            r"^(AR\s+\S+)\s+"                         # clave base
+            r"(.+?)\s+"                              # descripción en la línea
+            r"\b(M2|M3|ML|M|PZA|PZAS|SERVICIO|LOTE|KG|TON)\b"
+            r"\s+([0-9][0-9 ,]*\.\d{2}|-)"          # cantidad (tolera espacios)
+            r"\s+\$\s*([0-9][0-9 ,]*\.\d{2}|-)"     # precio unitario
+            r"\s+\$\s*([0-9][0-9 ,]*\.\d{2}|-)\s*$",# importe
+            flags=re.IGNORECASE,
+        )
+
+        patrones_ruido_presupuesto = [
+            re.compile(r"^Descripci[oó]ndel proyecto:", re.IGNORECASE),
+            re.compile(r"^Descripci[oó]n del proyecto:", re.IGNORECASE),
+            re.compile(r"^Cliente:", re.IGNORECASE),
+            re.compile(r"^Fecha:", re.IGNORECASE),
+            re.compile(r"^PRESUPUESTO$", re.IGNORECASE),
+            re.compile(
+                r"^Clave\s+Descripci[oó]n\s+Unidad\s+Cantidad\s+P\s+Unitario\s+Importe$",
+                re.IGNORECASE,
+            ),
+            # Títulos/subtotales de sección, por ejemplo:
+            # "CIMENTACION $ 364,129.47"
+            re.compile(
+                r"^[A-ZÁÉÍÓÚÑ0-9 /().,\-]+"
+                r"\s+\$\s*[0-9][0-9 ,]*\.\d{2}$",
+                re.IGNORECASE,
+            ),
+        ]
+
+        fila_actual = None
+
+        def _numero_pdf_partido(valor):
+            """
+            Convierte números cuyo texto quedó partido por el layout del PDF.
+            Ejemplos:
+              '2 50.00'     -> 250.00
+              '1 ,010.34'   -> 1010.34
+              '1 1,832.50'  -> 11832.50
+              '-'           -> None
+            """
+            if valor is None:
+                return None
+
+            texto = str(valor).strip()
+
+            if texto in {"", "-", "--"}:
+                return None
+
+            texto = (
+                texto.replace("$", "")
+                .replace(",", "")
+                .replace(" ", "")
+                .strip()
+            )
+
+            try:
+                return float(texto)
+            except (TypeError, ValueError):
+                return None
+
+        for numero_pagina, linea in lineas_pdf:
+
+            coincidencia = patron_presupuesto_obra.match(linea)
+
+            if coincidencia:
+
+                # Cierra la partida anterior después de haber acumulado
+                # todas sus líneas de descripción.
+                if fila_actual is not None:
+                    filas_presupuesto_obra.append(fila_actual)
+
+                cantidad = _numero_pdf_partido(coincidencia.group(4))
+                precio_unitario = _numero_pdf_partido(coincidencia.group(5))
+                importe = _numero_pdf_partido(coincidencia.group(6))
+
+                fila_actual = {
+                    "partida": coincidencia.group(1).strip(),
+                    "concepto": coincidencia.group(2).strip(),
+                    "unidad": normalizar_unidad(coincidencia.group(3)),
+                    "cantidad": cantidad,
+                    "precio_unitario": precio_unitario,
+                    "importe": importe,
+                    "origen": f"Página {numero_pagina}",
+                    "fila_encabezado": None,
+                    "puntaje_deteccion": 9,
+                }
+
+                paginas_detectadas.add(numero_pagina)
+                continue
+
+            if fila_actual is None:
+                continue
+
+            # Si aparece otra clave AR que no pudo cerrarse porque no trae
+            # precio (por ejemplo "PZA - $ - $ -"), no debe pegarse a la
+            # descripción de la partida anterior.
+            if linea.upper().startswith("AR "):
+                filas_presupuesto_obra.append(fila_actual)
+                fila_actual = None
+                continue
+
+            if any(
+                patron.search(linea)
+                for patron in patrones_ruido_presupuesto
+            ):
+                continue
+
+            # La descripción de estos presupuestos suele continuar debajo
+            # de la línea que contiene unidad/cantidad/precio/importe.
+            fila_actual["concepto"] = re.sub(
+                r"\s+",
+                " ",
+                f"{fila_actual['concepto']} {linea}",
+            ).strip()
+
+        if fila_actual is not None:
+            filas_presupuesto_obra.append(fila_actual)
+
+        # Conserva únicamente partidas realmente cotizadas.
+        filas_presupuesto_obra = [
+            fila
+            for fila in filas_presupuesto_obra
+            if fila.get("concepto")
+            and fila.get("precio_unitario") is not None
+            and fila.get("precio_unitario") > 0
+        ]
+
+        if filas_presupuesto_obra:
+            filas_validas = filas_presupuesto_obra
+
+
     # ======================================================
     # VALIDACIÓN Y LIMPIEZA FINAL
     # ======================================================
