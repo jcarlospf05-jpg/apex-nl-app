@@ -265,22 +265,55 @@ _PATRON_PRECIO_SUFIJO = re.compile(
 # primero) junto con las palabras que los rodean, y se prefiere el que
 # tenga cerca alguna palabra clave de la MISMA unidad que se cotizo
 # (ej. "jornal"/"por dia" para JORNAL, "m2"/"metro cuadrado" para M2).
-# Si no se encuentra ningun precio con contexto de la unidad correcta,
-# se usa el primero como respaldo (mismo comportamiento de antes) porque
-# es mejor una aproximacion que nada, pero ya no se ignora a ciegas la
-# unidad cuando SI hay pistas de cual precio es el correcto.
+#
+# OJO -- caso real visto en pruebas que obligo a este segundo ajuste:
+# a veces el texto SOLO trae el precio de una unidad distinta (ej. solo
+# menciona "$300-500 pesos por metro cuadrado" para una partida cotizada
+# por JORNAL, sin mencionar ningun precio por dia). Antes, si ninguna
+# oracion coincidia con la unidad cotizada, se usaba el primer precio
+# como respaldo -- pero ese respaldo segui comparando peras con
+# manzanas (m2 contra jornal). Si la unidad cotizada SI esta en el mapa
+# de palabras clave (es decir, se sabe como reconocerla) pero ninguna
+# oracion con precio la menciona, es mas seguro no dar ningun precio
+# que arriesgarse a comparar unidades distintas -- se regresa None
+# (sin dato) en vez de adivinar. El respaldo de "usar el primero" solo
+# aplica cuando la unidad NI SIQUIERA esta en el mapa (no hay forma de
+# verificarla de ningun modo, asi que una aproximacion es mejor que
+# nada).
+# Bilingues a proposito: los resumenes de Tavily a veces salen en
+# ingles (caso real visto en pruebas: "per square meter" en vez de
+# "metro cuadrado"), asi que cada unidad trae sus palabras clave en
+# espanol Y en ingles.
 _MAPA_UNIDAD_PALABRAS_CLAVE = {
-    "JORNAL": ["jornal", "por dia", "por día", "diario", "al dia", "al día", "jornada"],
-    "M2": ["m2", "m²", "metro cuadrado", "metros cuadrados"],
-    "M3": ["m3", "m³", "metro cubico", "metro cúbico", "metros cubicos", "metros cúbicos"],
-    "ML": ["ml", "metro lineal", "metros lineales"],
-    "KG": ["kg", "kilogramo", "kilogramos", "kilo", "por kilo"],
-    "TON": ["ton", "tonelada", "toneladas"],
-    "PZA": ["pza", "pieza", "unidad", "c/u", "cada uno", "por pieza"],
-    "LOTE": ["lote"],
-    "SERVICIO": ["servicio"],
-    "GLOBAL": ["global", "por lote"],
-    "LT": ["litro", "litros", "por litro"],
+    "JORNAL": [
+        "jornal", "por dia", "por día", "diario", "al dia", "al día", "jornada",
+        "per day", "daily", "day rate", "a day",
+    ],
+    "M2": [
+        "m2", "m²", "metro cuadrado", "metros cuadrados",
+        "square meter", "square meters", "sq m", "sqm", "per m2",
+    ],
+    "M3": [
+        "m3", "m³", "metro cubico", "metro cúbico", "metros cubicos", "metros cúbicos",
+        "cubic meter", "cubic meters",
+    ],
+    "ML": [
+        "ml", "metro lineal", "metros lineales",
+        "linear meter", "linear meters", "per meter", "per linear",
+    ],
+    "KG": [
+        "kg", "kilogramo", "kilogramos", "kilo", "por kilo",
+        "per kg", "per kilogram", "kilogram",
+    ],
+    "TON": ["ton", "tonelada", "toneladas", "per ton", "tonne"],
+    "PZA": [
+        "pza", "pieza", "unidad", "c/u", "cada uno", "por pieza",
+        "per piece", "per unit", "each",
+    ],
+    "LOTE": ["lote", "per lot", "lot"],
+    "SERVICIO": ["servicio", "per service", "service"],
+    "GLOBAL": ["global", "por lote", "lump sum"],
+    "LT": ["litro", "litros", "por litro", "per liter", "per litre"],
 }
 
 
@@ -312,9 +345,16 @@ def _extraer_precio_de_texto(texto, unidad=None):
                 except ValueError:
                     continue
 
-    # Ninguna oracion con precio tenia una palabra clave de la unidad
-    # cotizada (o la unidad no esta en el mapa de arriba): se usa el
-    # primer precio que aparecio en todo el texto, igual que antes.
+        # La unidad SI esta en el mapa (se sabe reconocerla) pero
+        # ninguna oracion con precio la menciono -- no se adivina con
+        # el primer precio que aparezca, porque lo mas probable es que
+        # este en OTRA unidad (ver comentario arriba).
+        return None
+
+    # La unidad cotizada no esta en el mapa de arriba (no hay forma de
+    # reconocerla en el texto): se usa el primer precio que aparecio en
+    # todo el texto como aproximacion, ya que no hay nada mejor con qué
+    # decidir.
     coincidencias = sorted(
         list(_PATRON_PRECIO_PREFIJO.finditer(texto))
         + list(_PATRON_PRECIO_SUFIJO.finditer(texto)),
