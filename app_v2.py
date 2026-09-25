@@ -2153,60 +2153,6 @@ if archivo is not None:
                     )
 
                 # ----------------------------------------------------------------
-                # 4ª fuente: la IA busca en internet (Google Search real, vía
-                # Gemini) un precio de mercado para cada partida.
-                #
-                # OJO: antes esto corría para TODAS las partidas sin importar si
-                # ya había match en NL/CDMX/histórico -- en cotizaciones grandes
-                # eso agota la cuota gratuita de Gemini en un par de corridas
-                # (cada búsqueda con Google Search cuesta cuota real, distinta a
-                # la de la revisión de matches débiles de abajo). Ahora la
-                # búsqueda en internet SOLO se manda para las partidas que NO
-                # tienen ningún precio de referencia todavía (ni NL, ni CDMX, ni
-                # histórico interno) -- ahí es donde de verdad hace falta, y así
-                # la cuota rinde para muchas más cotizaciones. Las partidas que
-                # ya tienen match no la necesitan: ya hay con qué comparar.
-                # ----------------------------------------------------------------
-                if busqueda_ia_disponible:
-
-                    items_busqueda_mercado = [
-                        {
-                            "id": str(indice),
-                            "descripcion": registro["concepto"],
-                            "unidad": registro["unidad"],
-                        }
-                        for indice, registro in enumerate(fila_registros)
-                        if not registro["nl"].get("clasificacion")
-                        and not registro["cdmx"].get("clasificacion")
-                        and not (
-                            registro["consulta_historico"]
-                            and registro["consulta_historico"].get("clasificacion")
-                        )
-                    ]
-
-                    resultados_busqueda_mercado = {}
-
-                    for inicio in range(
-                        0, len(items_busqueda_mercado), busqueda_mercado_ia.TAMANO_LOTE
-                    ):
-                        lote = items_busqueda_mercado[
-                            inicio:inicio + busqueda_mercado_ia.TAMANO_LOTE
-                        ]
-                        resultados_busqueda_mercado.update(
-                            busqueda_mercado_ia.buscar_precios_mercado_lote(lote)
-                        )
-
-                    for indice, registro in enumerate(fila_registros):
-                        registro["busqueda_ia"] = resultados_busqueda_mercado.get(
-                            str(indice)
-                        )
-
-                else:
-
-                    for registro in fila_registros:
-                        registro["busqueda_ia"] = None
-
-                # ----------------------------------------------------------------
                 # Revisión con IA en LOTE (no una llamada por partida): se juntan
                 # todos los matches riesgosos (confianza BAJA o precio con
                 # diferencia extrema, marcados con 'motivo' por comparador.evaluar()
@@ -2216,6 +2162,17 @@ if archivo is not None:
                 # agote el límite de solicitudes por minuto de la cuenta gratuita:
                 # en vez de ~20 llamadas (una por partida), quedan ~3-4 (una por
                 # lote).
+                #
+                # OJO: este bloque corre ANTES de decidir qué partidas mandar a la
+                # 4ª fuente (búsqueda en internet) -- a propósito. Si una partida
+                # tenía match en NL/CDMX/histórico pero la IA lo RECHAZA aquí, esa
+                # partida se queda sin ninguna referencia válida, y debe poder
+                # mandarse a buscar en internet igual que una partida que nunca
+                # tuvo match. Si este bloque corriera después, esas partidas se
+                # quedarían sin ninguna fuente de precio (bug ya visto en pruebas
+                # reales: una partida con match rechazado por la IA se marcaba
+                # "no hacía falta: ya hay precio de referencia de otra fuente"
+                # cuando en realidad esa referencia ya había sido descartada).
                 # ----------------------------------------------------------------
                 if usar_ia:
 
@@ -2283,6 +2240,72 @@ if archivo is not None:
                                 registro["cdmx"]["revision_ia"] = veredicto
                             elif clave_fuente == "hist":
                                 registro["consulta_historico"]["revision_ia"] = veredicto
+
+                # ----------------------------------------------------------------
+                # Una fuente cuenta como "referencia válida" solo si tiene
+                # clasificación Y la IA no la rechazó (si la IA no está activada,
+                # o simplemente no la revisó, sigue contando con su clasificación
+                # original). Esto es lo que decide tanto si hace falta mandar la
+                # partida a la 4ª fuente como el mensaje que se muestra después.
+                # ----------------------------------------------------------------
+                def _referencia_valida(fuente_dict):
+                    if not fuente_dict or not fuente_dict.get("clasificacion"):
+                        return False
+                    descartar, _motivo = _revision_ia_descarta(fuente_dict, usar_ia)
+                    return not descartar
+
+                # ----------------------------------------------------------------
+                # 4ª fuente: la IA busca en internet (Google Search vía Gemini, o
+                # Tavily como respaldo gratuito) un precio de mercado para cada
+                # partida.
+                #
+                # OJO: antes esto corría para TODAS las partidas sin importar si
+                # ya había match en NL/CDMX/histórico -- en cotizaciones grandes
+                # eso agota la cuota gratuita en un par de corridas (cada búsqueda
+                # cuesta cuota real, distinta a la de la revisión de matches
+                # débiles de arriba). Ahora la búsqueda en internet SOLO se manda
+                # para las partidas que NO tienen ninguna referencia VÁLIDA
+                # todavía (ni NL, ni CDMX, ni histórico interno) -- esto corre
+                # DESPUÉS de la revisión de IA de arriba para que una partida cuyo
+                # único match fue rechazado por la IA sí cuente como "sin
+                # referencia" y se mande a buscar en internet, en vez de quedarse
+                # sin ningún precio con el que compararse.
+                # ----------------------------------------------------------------
+                if busqueda_ia_disponible:
+
+                    items_busqueda_mercado = [
+                        {
+                            "id": str(indice),
+                            "descripcion": registro["concepto"],
+                            "unidad": registro["unidad"],
+                        }
+                        for indice, registro in enumerate(fila_registros)
+                        if not _referencia_valida(registro["nl"])
+                        and not _referencia_valida(registro["cdmx"])
+                        and not _referencia_valida(registro["consulta_historico"])
+                    ]
+
+                    resultados_busqueda_mercado = {}
+
+                    for inicio in range(
+                        0, len(items_busqueda_mercado), busqueda_mercado_ia.TAMANO_LOTE
+                    ):
+                        lote = items_busqueda_mercado[
+                            inicio:inicio + busqueda_mercado_ia.TAMANO_LOTE
+                        ]
+                        resultados_busqueda_mercado.update(
+                            busqueda_mercado_ia.buscar_precios_mercado_lote(lote)
+                        )
+
+                    for indice, registro in enumerate(fila_registros):
+                        registro["busqueda_ia"] = resultados_busqueda_mercado.get(
+                            str(indice)
+                        )
+
+                else:
+
+                    for registro in fila_registros:
+                        registro["busqueda_ia"] = None
 
                 # ----------------------------------------------------------------
                 # Segunda pasada: ya con la revisión de IA (si aplica) resuelta
@@ -2354,14 +2377,16 @@ if archivo is not None:
                     _resultado_ia = "todavía no hay"
 
                     # La búsqueda en internet solo se manda cuando NINGUNA otra
-                    # fuente (NL/CDMX/histórico) encontró referencia -- así se
-                    # cuida la cuota gratuita de Gemini. Se distingue este caso
-                    # (mensaje "no hacía falta") del caso en que sí se buscó
-                    # pero no se encontró nada confiable.
+                    # fuente (NL/CDMX/histórico) tiene una referencia VÁLIDA --
+                    # es decir, con clasificación Y sin que la IA la haya
+                    # rechazado (mismo criterio que decidió si se mandó a
+                    # buscar, arriba). Así se cuida la cuota gratuita. Se
+                    # distingue este caso (mensaje "no hacía falta") del caso
+                    # en que sí se buscó pero no se encontró nada confiable.
                     _tenia_otra_referencia = bool(
-                        nl.get("clasificacion")
-                        or cdmx.get("clasificacion")
-                        or (consulta_historico and consulta_historico.get("clasificacion"))
+                        _referencia_valida(nl)
+                        or _referencia_valida(cdmx)
+                        or _referencia_valida(consulta_historico)
                     )
 
                     if busqueda_ia and busqueda_ia.get("tiene_dato"):
@@ -2731,43 +2756,47 @@ if archivo is not None:
                 )
 
                 c2.metric(
-                    "Altas",
+                    "🔴 Caras",
                     int(
                         resumen_veredictos.get(
                             "ALTO",
                             0,
                         )
                     ),
+                    help="Precio cotizado por encima del precio de mercado.",
                 )
 
                 c3.metric(
-                    "Bajas",
+                    "🟢 Baratas",
                     int(
                         resumen_veredictos.get(
                             "BAJO",
                             0,
                         )
                     ),
+                    help="Precio cotizado por debajo del precio de mercado.",
                 )
 
                 c4.metric(
-                    "En mercado",
+                    "🟡 En rango",
                     int(
                         resumen_veredictos.get(
                             "EN MERCADO",
                             0,
                         )
                     ),
+                    help="Precio cotizado dentro del rango normal de mercado.",
                 )
 
                 c5.metric(
-                    "Sin datos",
+                    "⚪ Sin datos",
                     int(
                         resumen_veredictos.get(
                             "SIN DATOS SUFICIENTES",
                             0,
                         )
                     ),
+                    help="No se encontró ninguna referencia confiable para comparar esta partida.",
                 )
 
                 # ----------------------------------------------------------
@@ -2804,7 +2833,7 @@ if archivo is not None:
 
                         if _error_busqueda and _error_busqueda.get("mensaje"):
                             st.caption(
-                                f"Búsqueda en internet (Gemini): "
+                                f"Búsqueda en internet (4ª fuente): "
                                 f"{_error_busqueda['mensaje']}"
                             )
 
@@ -2882,13 +2911,31 @@ if archivo is not None:
 
                     return ""
 
-                # RESULTADO FINAL (el veredicto combinado en una sola
-                # columna) se quita de la tabla que se ve en pantalla --
-                # pedido de dirección: que se muestren los 4 resultados de
-                # cada fuente por separado en vez de un solo número
-                # combinado. Sigue calculándose por dentro (se usa para las
-                # métricas de arriba, la gráfica y el histórico guardado en
-                # Google Sheets), solo no se despliega como columna aquí.
+                # ------------------------------------------------------------
+                # Vista simple (default) vs. vista avanzada: con 4 fuentes,
+                # cada una con su match/confiabilidad/precio/resultado/
+                # diferencia, la tabla completa llega a tener ~25-30
+                # columnas -- demasiado para leer de un vistazo. Por default
+                # se muestra solo lo que hace falta para decidir (veredicto
+                # combinado + qué tan lejos está del mercado); quien quiera
+                # ver POR QUÉ se llegó a ese veredicto (con qué coincidió
+                # cada fuente, su confiabilidad, su precio) puede activar la
+                # vista avanzada con el mismo detalle de siempre.
+                # ------------------------------------------------------------
+                st.markdown("#### Resultado de la revisión")
+
+                vista_avanzada = st.checkbox(
+                    "Mostrar el detalle de las 4 fuentes por separado (vista avanzada)",
+                    value=False,
+                    help=(
+                        "Vista simple: un veredicto combinado por partida "
+                        "(caro / en rango / bajo) y qué tan lejos está el "
+                        "precio cotizado del de mercado. Actívala para ver, "
+                        "fuente por fuente, con qué coincidió cada partida, "
+                        "su confiabilidad y su precio de referencia."
+                    ),
+                )
+
                 _columnas_ocultar_en_pantalla = [
                     columna
                     for columna in ("RESULTADO FINAL", "% Diferencia vs referencia")
@@ -2896,70 +2943,138 @@ if archivo is not None:
                 ]
                 tabla_visible = tabla.drop(columns=_columnas_ocultar_en_pantalla)
 
-                # Se colorea cada una de las 4 fuentes por separado -- tanto
-                # el resultado de precio (caro/en rango/bajo) como la
-                # confianza del match (alta/media/baja) -- para que se vea de
-                # un vistazo en qué está de acuerdo o en desacuerdo cada
-                # fuente, sin depender de un solo veredicto combinado.
-                _columnas_resaltar_precio = [
-                    columna
-                    for columna in (
-                        "Resultado NL",
-                        "Resultado CDMX",
-                        "Resultado histórico",
-                        "Resultado IA internet",
-                    )
-                    if columna in tabla_visible.columns
-                ]
-                _columnas_resaltar_confianza = [
-                    columna
-                    for columna in (
-                        "Confiabilidad NL",
-                        "Confiabilidad CDMX",
-                        "Confiabilidad histórico interno",
-                    )
-                    if columna in tabla_visible.columns
-                ]
-                _columnas_diferencia_por_fuente = [
-                    columna
-                    for columna in (
-                        "% Diferencia NL",
-                        "% Diferencia CDMX",
-                        "% Diferencia histórico",
-                        "% Diferencia IA internet",
-                    )
-                    if columna in tabla_visible.columns
-                ]
-                _formato_diferencias = {
-                    columna: (
-                        lambda v: (
-                            f"{v:+.1f}%"
-                            if pd.notna(v)
-                            else ""
-                        )
-                    )
-                    for columna in _columnas_diferencia_por_fuente
-                }
+                if vista_avanzada:
 
-                st.dataframe(
-                    tabla_visible.style.map(
-                        resaltar,
-                        subset=_columnas_resaltar_precio,
-                    ).map(
-                        resaltar_confianza,
-                        subset=_columnas_resaltar_confianza,
-                    ).map(
-                        resaltar_diferencia,
-                        subset=_columnas_diferencia_por_fuente,
-                    ).format(_formato_diferencias),
-                    use_container_width=True,
-                    height=min(
-                        650,
-                        60 + 35 * len(
-                            tabla
+                    # Se colorea cada una de las 4 fuentes por separado --
+                    # tanto el resultado de precio (caro/en rango/bajo) como
+                    # la confianza del match (alta/media/baja) -- para que se
+                    # vea de un vistazo en qué está de acuerdo o en
+                    # desacuerdo cada fuente, sin depender de un solo
+                    # veredicto combinado.
+                    _columnas_resaltar_precio = [
+                        columna
+                        for columna in (
+                            "Resultado NL",
+                            "Resultado CDMX",
+                            "Resultado histórico",
+                            "Resultado IA internet",
+                        )
+                        if columna in tabla_visible.columns
+                    ]
+                    _columnas_resaltar_confianza = [
+                        columna
+                        for columna in (
+                            "Confiabilidad NL",
+                            "Confiabilidad CDMX",
+                            "Confiabilidad histórico interno",
+                        )
+                        if columna in tabla_visible.columns
+                    ]
+                    _columnas_diferencia_por_fuente = [
+                        columna
+                        for columna in (
+                            "% Diferencia NL",
+                            "% Diferencia CDMX",
+                            "% Diferencia histórico",
+                            "% Diferencia IA internet",
+                        )
+                        if columna in tabla_visible.columns
+                    ]
+                    _formato_diferencias = {
+                        columna: (
+                            lambda v: (
+                                f"{v:+.1f}%"
+                                if pd.notna(v)
+                                else ""
+                            )
+                        )
+                        for columna in _columnas_diferencia_por_fuente
+                    }
+
+                    st.dataframe(
+                        tabla_visible.style.map(
+                            resaltar,
+                            subset=_columnas_resaltar_precio,
+                        ).map(
+                            resaltar_confianza,
+                            subset=_columnas_resaltar_confianza,
+                        ).map(
+                            resaltar_diferencia,
+                            subset=_columnas_diferencia_por_fuente,
+                        ).format(_formato_diferencias),
+                        use_container_width=True,
+                        height=min(
+                            650,
+                            60 + 35 * len(
+                                tabla
+                            ),
                         ),
-                    ),
-                )
+                    )
+
+                else:
+
+                    _columnas_simples = [
+                        columna
+                        for columna in (
+                            "Partida",
+                            "Concepto",
+                            "Unidad",
+                            "Cantidad",
+                            "Precio cotizado",
+                            "RESULTADO FINAL",
+                            "% Diferencia vs referencia",
+                            "Opinión IA (sin datos verificados)",
+                        )
+                        if columna in tabla.columns
+                    ]
+                    tabla_simple = tabla[_columnas_simples].rename(
+                        columns={
+                            "RESULTADO FINAL": "Veredicto",
+                            "% Diferencia vs referencia": "% Diferencia",
+                            "Opinión IA (sin datos verificados)": "Comentario de la IA",
+                        }
+                    )
+
+                    _subset_veredicto = (
+                        ["Veredicto"] if "Veredicto" in tabla_simple.columns else []
+                    )
+                    _subset_diferencia = (
+                        ["% Diferencia"] if "% Diferencia" in tabla_simple.columns else []
+                    )
+                    _formato_simple = (
+                        {
+                            "% Diferencia": lambda v: (
+                                f"{v:+.1f}%" if pd.notna(v) else ""
+                            )
+                        }
+                        if _subset_diferencia
+                        else {}
+                    )
+
+                    st.dataframe(
+                        tabla_simple.style.map(
+                            resaltar,
+                            subset=_subset_veredicto,
+                        ).map(
+                            resaltar_diferencia,
+                            subset=_subset_diferencia,
+                        ).format(_formato_simple),
+                        use_container_width=True,
+                        height=min(
+                            650,
+                            60 + 35 * len(
+                                tabla
+                            ),
+                        ),
+                    )
+
+                    st.caption(
+                        "\"Veredicto\" combina lo que dijeron las 4 fuentes "
+                        "(NL, CDMX, histórico interno e IA en internet) en "
+                        "un solo resultado por mayoría. ¿Quieres ver por qué "
+                        "se llegó a cada uno? Activa la vista avanzada de "
+                        "arriba."
+                    )
 
                 buffer = io.BytesIO()
 
