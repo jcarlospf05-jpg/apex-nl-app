@@ -2280,6 +2280,17 @@ if archivo is not None:
                     cdmx = registro["cdmx"]
                     consulta_historico = registro["consulta_historico"]
 
+                    # ------------------------------------------------------------
+                    # Datos básicos + columnas de DETALLE de cada fuente (match
+                    # de texto encontrado, confianza, precio de referencia).
+                    # OJO: los 4 "Resultado" + "% Diferencia" de cada fuente NO
+                    # se agregan aquí -- se calculan en variables locales y se
+                    # agregan TODOS JUNTOS al final de este bloque, para que
+                    # queden pegados unos con otros en las últimas columnas de
+                    # la tabla en vez de repartidos entre el detalle de cada
+                    # fuente -- pedido explícito: "que el resultado final de
+                    # cada uno estén al final juntas pegadas".
+                    # ------------------------------------------------------------
                     fila = {
                         "Partida": renglon.get("partida"),
                         "Concepto": concepto,
@@ -2295,23 +2306,17 @@ if archivo is not None:
                         "Precio mediana NL (ajustado hoy)": nl.get(
                             "precio_mediana_ajustada"
                         ),
-                        "Resultado de confiabilidad NL": nl.get("clasificacion"),
                         "Match CDMX": cdmx.get("match"),
                         "Confiabilidad CDMX": cdmx.get("confianza"),
                         "Precio referencia CDMX": cdmx.get("precio_referencia"),
-                        "Resultado de confiabilidad CDMX": cdmx.get("clasificacion"),
                     }
 
-                    # % de diferencia de CADA fuente por separado (no solo un
-                    # promedio combinado) -- pedido de dirección: se quiere ver
-                    # qué tan caro/barato sale el precio cotizado contra CADA
-                    # una de las 4 referencias, no solo un número combinado.
                     _ref_nl = nl.get("precio_mediana_ajustada")
-                    fila["% Diferencia NL"] = (
+                    _diff_nl = (
                         round((precio - _ref_nl) / _ref_nl * 100, 1) if _ref_nl else None
                     )
                     _ref_cdmx = cdmx.get("precio_referencia")
-                    fila["% Diferencia CDMX"] = (
+                    _diff_cdmx = (
                         round((precio - _ref_cdmx) / _ref_cdmx * 100, 1) if _ref_cdmx else None
                     )
 
@@ -2324,6 +2329,8 @@ if archivo is not None:
                     # ------------------------------------------------------------
                     busqueda_ia = registro.get("busqueda_ia")
                     clasificacion_ia_mercado = None
+                    _diff_ia = None
+                    _resultado_ia = "todavía no hay"
 
                     if busqueda_ia and busqueda_ia.get("tiene_dato"):
 
@@ -2332,12 +2339,12 @@ if archivo is not None:
                         clasificacion_ia_mercado = clasificar(
                             precio, banda_baja_ia, banda_alta_ia
                         )
-
-                        fila["Precio mercado (IA internet)"] = precio_mercado_ia
-                        fila["Resultado de confiabilidad IA internet"] = clasificacion_ia_mercado
-                        fila["% Diferencia IA internet"] = round(
+                        _resultado_ia = clasificacion_ia_mercado
+                        _diff_ia = round(
                             (precio - precio_mercado_ia) / precio_mercado_ia * 100, 1
                         )
+
+                        fila["Precio mercado (IA internet)"] = precio_mercado_ia
                         fila["Fuente IA (internet)"] = (
                             busqueda_ia.get("fuente_nombre") or busqueda_ia.get("fuente_url") or ""
                         )
@@ -2345,7 +2352,6 @@ if archivo is not None:
 
                     elif busqueda_ia_disponible:
 
-                        fila["Resultado de confiabilidad IA internet"] = "todavía no hay"
                         fila["Nota IA internet"] = (
                             busqueda_ia.get("nota", "") if busqueda_ia else
                             "la IA no encontró un precio real verificable para esta partida"
@@ -2353,7 +2359,6 @@ if archivo is not None:
 
                     else:
 
-                        fila["Resultado de confiabilidad IA internet"] = "todavía no hay"
                         fila["Nota IA internet"] = (
                             "4ª fuente no conectada (falta gemini_api_key en Secrets)"
                         )
@@ -2378,9 +2383,9 @@ if archivo is not None:
                     # (ej. límite de la cuenta gratuita), no debe contar para el
                     # resultado final -- es más seguro tratarlo como no
                     # confirmado que confiar en un match que nunca se validó. Se
-                    # deja visible en su columna de detalle (Resultado de
-                    # confiabilidad NL / Resultado de confiabilidad CDMX) para
-                    # que quede claro qué se descartó y por qué.
+                    # deja visible en la columna final "Resultado NL"/"Resultado
+                    # CDMX" (agregada más abajo) para que quede claro qué se
+                    # descartó y por qué.
                     nl_rechazado_por_ia, motivo_descarte_nl = (
                         _revision_ia_descarta(nl, usar_ia)
                     )
@@ -2388,17 +2393,13 @@ if archivo is not None:
                         _revision_ia_descarta(cdmx, usar_ia)
                     )
 
-                    if nl_rechazado_por_ia and fila.get("Resultado de confiabilidad NL"):
-                        fila["Resultado de confiabilidad NL"] = (
-                            f"{fila['Resultado de confiabilidad NL']} "
-                            f"(descartado: {motivo_descarte_nl})"
-                        )
+                    _resultado_nl = nl.get("clasificacion")
+                    if nl_rechazado_por_ia and _resultado_nl:
+                        _resultado_nl = f"{_resultado_nl} (descartado: {motivo_descarte_nl})"
 
-                    if cdmx_rechazado_por_ia and fila.get("Resultado de confiabilidad CDMX"):
-                        fila["Resultado de confiabilidad CDMX"] = (
-                            f"{fila['Resultado de confiabilidad CDMX']} "
-                            f"(descartado: {motivo_descarte_cdmx})"
-                        )
+                    _resultado_cdmx = cdmx.get("clasificacion")
+                    if cdmx_rechazado_por_ia and _resultado_cdmx:
+                        _resultado_cdmx = f"{_resultado_cdmx} (descartado: {motivo_descarte_cdmx})"
 
                     clasificaciones = [
                         valor
@@ -2429,6 +2430,9 @@ if archivo is not None:
                         )
                         if valor
                     ]
+
+                    _resultado_historico = "todavía no hay"
+                    _diff_historico = None
 
                     if consulta_historico is not None and consulta_historico.get(
                         "match"
@@ -2468,10 +2472,11 @@ if archivo is not None:
                                 f"(descartado: {motivo_descarte_historico})"
                             )
 
-                        fila["Resultado de confiabilidad histórico interno"] = veredicto_historico
+                        if veredicto_historico:
+                            _resultado_historico = veredicto_historico
 
                         _ref_hist = consulta_historico.get("precio_mediana")
-                        fila["% Diferencia histórico"] = (
+                        _diff_historico = (
                             round((precio - _ref_hist) / _ref_hist * 100, 1) if _ref_hist else None
                         )
 
@@ -2497,7 +2502,6 @@ if archivo is not None:
                         # explícito "todavía no hay" en vez de una columna en
                         # blanco sin explicación -- pedido directo de dirección.
                         fila["Match histórico interno"] = "todavía no hay"
-                        fila["Resultado de confiabilidad histórico interno"] = "todavía no hay"
 
                     # La 4ª fuente (IA búsqueda en internet) suma su voto al
                     # veredicto combinado igual que NL/CDMX/histórico, solo
@@ -2507,6 +2511,22 @@ if archivo is not None:
                         clasificaciones.append(clasificacion_ia_mercado)
                         if busqueda_ia and busqueda_ia.get("precio_mxn"):
                             referencias_precio.append(busqueda_ia["precio_mxn"])
+
+                    # ------------------------------------------------------------
+                    # Los 4 resultados finales (uno por fuente) JUNTOS y PEGADOS
+                    # al final, cada uno con su % de diferencia justo al lado --
+                    # pedido explícito: en vez de repartir cada resultado entre
+                    # las columnas de detalle de su propia fuente, se agrupan
+                    # todos aquí para poder comparar los 4 de un vistazo.
+                    # ------------------------------------------------------------
+                    fila["Resultado NL"] = _resultado_nl
+                    fila["% Diferencia NL"] = _diff_nl
+                    fila["Resultado CDMX"] = _resultado_cdmx
+                    fila["% Diferencia CDMX"] = _diff_cdmx
+                    fila["Resultado histórico"] = _resultado_historico
+                    fila["% Diferencia histórico"] = _diff_historico
+                    fila["Resultado IA internet"] = _resultado_ia
+                    fila["% Diferencia IA internet"] = _diff_ia
 
                     if clasificaciones:
 
@@ -2845,10 +2865,10 @@ if archivo is not None:
                 _columnas_resaltar_precio = [
                     columna
                     for columna in (
-                        "Resultado de confiabilidad NL",
-                        "Resultado de confiabilidad CDMX",
-                        "Resultado de confiabilidad histórico interno",
-                        "Resultado de confiabilidad IA internet",
+                        "Resultado NL",
+                        "Resultado CDMX",
+                        "Resultado histórico",
+                        "Resultado IA internet",
                     )
                     if columna in tabla_visible.columns
                 ]
