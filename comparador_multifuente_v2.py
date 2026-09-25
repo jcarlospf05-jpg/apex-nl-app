@@ -1,7 +1,6 @@
 """
 Comparador multi-fuente - Revision economica de cotizaciones/licitaciones CAPEX
 =================================================================================
-
 Evalua una partida cotizada contra TODAS las fuentes de precio disponibles y
 regresa un veredicto por fuente + un veredicto combinado.
 
@@ -20,7 +19,6 @@ Fuentes con interfaz lista pero SIN datos todavia (no se inventa nada):
 
 Uso:
     from comparador_multifuente_v2 import ComparadorMultiFuente
-
     c = ComparadorMultiFuente("Base_Precios_Unitarios_NL_CDMX.xlsx")
     veredicto = c.evaluar(
         descripcion="Suministro y colocacion de acero de refuerzo en losas, varilla corrugada",
@@ -29,20 +27,90 @@ Uso:
     )
     print(veredicto)
 """
-
 import re
 import unicodedata
 import pandas as pd
 from rapidfuzz import fuzz, process
 
-from ajuste_inflacion import factor_ajuste, ajustar_precio, ETIQUETA_ACTUAL, FUENTE as FUENTE_INPC
+import ajuste_inflacion as _inflacion
+from ajuste_inflacion import factor_ajuste, ajustar_precio, FUENTE as FUENTE_INPC
+import revision_ia as _revision_ia
+# Nota: ETIQUETA_ACTUAL se lee como _inflacion.ETIQUETA_ACTUAL (no se importa
+# el nombre suelto) porque refrescar_nivel_actual() lo actualiza en tiempo de
+# ejecucion; si se importara como valor suelto aqui, este modulo se quedaria
+# con la etiqueta vieja aunque el numero (via factor_ajuste) si se actualice.
 
 LEADING_CODE_RE = re.compile(r'^\s*[\d.]{1,15}\s+')
 WS_RE = re.compile(r'\s+')
 
+# Abreviaturas comunes en cotizaciones/licitaciones de CAPEX en Mexico.
+# Se expanden a su forma completa ANTES de comparar texto, para que
+# "SUM E INST DE..." y "SUMINISTRO E INSTALACION DE..." puntuen igual de
+# bien que si estuvieran escritas exactamente igual. Se aplica por token
+# completo (no substrings), asi que es seguro agregar mas entradas aqui
+# sin miedo a corromper palabras que ya son correctas.
+ABREVIATURAS_DESCRIPCION = {
+    'SUM': 'SUMINISTRO', 'SUMIN': 'SUMINISTRO', 'SUMINIST': 'SUMINISTRO',
+    'INST': 'INSTALACION', 'INSTAL': 'INSTALACION', 'INSTALAC': 'INSTALACION',
+    'COL': 'COLOCACION', 'COLOC': 'COLOCACION',
+    'TRANSP': 'TRANSPORTE',
+    'INC': 'INCLUYE', 'INCL': 'INCLUYE', 'INCLUY': 'INCLUYE',
+    'DEMOL': 'DEMOLICION',
+    'EXC': 'EXCAVACION', 'EXCAV': 'EXCAVACION',
+    'CONC': 'CONCRETO',
+    'ACAB': 'ACABADO',
+    'ELEC': 'ELECTRICO', 'ELECT': 'ELECTRICO',
+    'ESTRUC': 'ESTRUCTURA', 'ESTR': 'ESTRUCTURA',
+    'MOT': 'MOTOR',
+    'MTO': 'MANTENIMIENTO',
+    'IMPERM': 'IMPERMEABILIZACION',
+    'PREF': 'PREFABRICADO',
+    'GALV': 'GALVANIZADO',
+}
+
+# Prefijos tipo "C/", "S/", "P/" (con/sin/para) que aparecen pegados a la
+# siguiente palabra en muchas cotizaciones ("C/CUÑA", "S/ANDAMIO"). Se
+# expanden con regex de limite de palabra ANTES de quitar signos, porque
+# el filtro de caracteres de normalize_text conserva la diagonal.
+_PREFIJOS_SLASH = [
+    (re.compile(r'\bC/'), 'CON '),
+    (re.compile(r'\bS/'), 'SIN '),
+    (re.compile(r'\bP/'), 'PARA '),
+]
+
+# Renglones genericos que aparecen sueltos en muchas cotizaciones (un
+# "catch-all" de mano de obra o materiales varios, sin especificar de
+# que material se trata) y que NO deben compararse contra la base de
+# precios: como no describen un material especifico, cualquier "match"
+# que el scorer encuentre para ellos es coincidencia de palabras
+# genericas (mano/obra/material/equipo...) y no significa que sea el
+# mismo concepto. Se comparan ya normalizados (mayusculas, sin acentos).
+CONCEPTOS_GENERICOS_SIN_MATERIAL = {
+    'MANO DE OBRA',
+    'MANO DE OBRA ESPECIALIZADA',
+    'MATERIALES',
+    'MATERIALES Y MANO DE OBRA',
+    'HERRAMIENTA',
+    'HERRAMIENTAS',
+    'EQUIPO',
+    'VARIOS',
+    'CONCEPTOS VARIOS',
+    'TRABAJOS VARIOS',
+}
+
 
 def _strip_accents(s: str) -> str:
+    # NFKD tambien "desarma" caracteres de compatibilidad como M² -> M2 y
+    # M³ -> M3, ademas de quitar acentos. Por eso se usa tanto en texto
+    # como en unidades: sin esto, "M2" y "M²" nunca hacian match aunque
+    # fueran exactamente la misma unidad.
     return ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
+
+
+def _expandir_abreviaturas(texto: str) -> str:
+    tokens = texto.split(' ')
+    tokens = [ABREVIATURAS_DESCRIPCION.get(tok, tok) for tok in tokens]
+    return ' '.join(tokens)
 
 
 def normalize_text(raw: str) -> str:
@@ -51,14 +119,542 @@ def normalize_text(raw: str) -> str:
     t = raw.strip()
     t = LEADING_CODE_RE.sub('', t)
     t = _strip_accents(t.upper())
+    for patron, reemplazo in _PREFIJOS_SLASH:
+        t = patron.sub(reemplazo, t)
     t = re.sub(r'[^A-Z0-9%./\-\s]', ' ', t)
-    return WS_RE.sub(' ', t).strip()
+    t = WS_RE.sub(' ', t).strip()
+    return _expandir_abreviaturas(t)
+
+
+# Unidades equivalentes que en las bases reales aparecen escritas de
+# formas distintas para la MISMA unidad fisica (confirmado revisando
+# Base_Precios_Unitarios_Nuevo_Leon_REAL.xlsx: "pieza" aparece como PZA,
+# PZ, PZAS, PZS, PIEZA, PIEZAS, PIESZA (typo) y UN por separado; "metro
+# lineal" aparece como M, ML, MTS, MT, METRO, METROS y MI). Como el
+# comparador exige unidad identica antes de comparar texto, esta
+# fragmentacion hacia que miles de renglones nunca se cruzaran entre si
+# aunque fueran el mismo material. Las llaves y valores ya deben venir en
+# mayusculas/sin acentos (se aplica despues de _strip_accents).
+UNIDAD_CANONICA = {
+    # pieza
+    'PZA': 'PZA', 'PZ': 'PZA', 'PZAS': 'PZA', 'PZS': 'PZA',
+    'PIEZA': 'PZA', 'PIEZAS': 'PZA', 'PIESZA': 'PZA',
+    'UN': 'PZA', 'UNIDAD': 'PZA', 'UNIDADES': 'PZA',
+    # metro lineal (distinto de M2/M3, que ya se resuelven solos porque
+    # _strip_accents convierte M² -> M2 y M³ -> M3)
+    'M': 'ML', 'ML': 'ML', 'MTS': 'ML', 'MT': 'ML', 'MI': 'ML',
+    'METRO': 'ML', 'METROS': 'ML', 'MTSL': 'ML', 'MTL': 'ML', 'MTO': 'ML',
+    # peso
+    'KG': 'KG', 'KGS': 'KG', 'KILOGRAMO': 'KG', 'KILOGRAMOS': 'KG', 'KILO': 'KG',
+    'TON': 'TON', 'TONS': 'TON', 'TONELADA': 'TON', 'TONELADAS': 'TON',
+    # volumen
+    'L': 'LT', 'LT': 'LT', 'LTS': 'LT', 'LITRO': 'LT', 'LITROS': 'LT',
+    # conjuntos
+    'JGO': 'JGO', 'JUEGO': 'JGO', 'JUEGOS': 'JGO',
+    'LOTE': 'LOTE', 'LOTES': 'LOTE',
+    'GLOBAL': 'GLOBAL', 'GLB': 'GLOBAL', 'GL': 'GLOBAL',
+    'KIT': 'KIT', 'KITS': 'KIT',
+    # otros abreviados comunes en la base real
+    'TRAMO': 'TRAMO', 'TMO': 'TRAMO',
+    'BOBINA': 'BOBINA', 'BOB': 'BOBINA',
+    'SERVICIO': 'SERVICIO', 'SERV': 'SERVICIO',
+    'ESTUDIO': 'ESTUDIO', 'EST': 'ESTUDIO',
+    'ROLLO': 'ROLLO', 'ROLLOS': 'ROLLO',
+    'VIAJE': 'VIAJE', 'VIAJES': 'VIAJE',
+    'JORNAL': 'JORNAL', 'JOR': 'JORNAL',
+}
 
 
 def normalize_unit(u: str) -> str:
     if not isinstance(u, str) or not u.strip():
         return 'SIN_UNIDAD'
-    return u.strip().upper().replace('.', '')
+    t = _strip_accents(u.strip().upper()).replace('.', '')
+    t = WS_RE.sub(' ', t).strip()
+    return UNIDAD_CANONICA.get(t, t)
+
+
+def extraer_amperaje(texto: str):
+    texto = normalize_text(texto)
+    patrones = [
+        r'\b\d+\s*X\s*(\d+(?:\.\d+)?)\s*(?:A|AMPS?\.?|AMPERES?)\b',
+        r'\b(\d+(?:\.\d+)?)\s*(?:A|AMPS?\.?|AMPERES?)\b',
+    ]
+    for patron in patrones:
+        coincidencia = re.search(patron, texto)
+        if coincidencia:
+            return float(coincidencia.group(1))
+    return None
+
+
+def extraer_polos(texto: str):
+    texto = normalize_text(texto)
+    patrones = [
+        r'\b([1-4])\s*X\s*\d+(?:\.\d+)?\s*(?:A|AMPS?\.?|AMPERES?)\b',
+        r'\b([1-4])\s*POLOS?\b',
+    ]
+    for patron in patrones:
+        coincidencia = re.search(patron, texto)
+        if coincidencia:
+            return int(coincidencia.group(1))
+    return None
+
+
+def extraer_calibre_awg(texto: str):
+    texto = normalize_text(texto)
+    patrones = [
+        r'\bCAL(?:IBRE)?\.?\s*(\d{1,3})\b',
+        r'\b\d+\s*X\s*(\d{1,3})\s*AWG\b',
+        r'\b(\d{1,3})\s*AWG\b',
+    ]
+    for patron in patrones:
+        coincidencia = re.search(patron, texto)
+        if coincidencia:
+            return int(coincidencia.group(1))
+    return None
+
+
+def extraer_numero_conductores(texto: str):
+    """
+    Extrae la cantidad de conductores en expresiones como:
+    3X14 AWG, 4 X 12 AWG.
+    """
+    texto = normalize_text(texto)
+    coincidencia = re.search(
+        r'\b(\d+)\s*X\s*\d{1,3}\s*AWG\b',
+        texto,
+    )
+    if coincidencia:
+        return int(coincidencia.group(1))
+    return None
+
+
+def extraer_diametro_mm(texto: str):
+    texto = normalize_text(texto)
+    coincidencia = re.search(
+        r'\b(\d+(?:\.\d+)?)\s*MM\b',
+        texto,
+    )
+    if coincidencia:
+        return float(coincidencia.group(1))
+    return None
+
+
+def extraer_diametro_pulgadas(texto: str):
+    texto = str(texto).upper()
+    coincidencia = re.search(
+        r'\b(\d+(?:\.\d+)?|\d+/\d+)\s*(?:"|PULG)',
+        texto,
+    )
+    if coincidencia:
+        return coincidencia.group(1)
+    return None
+
+
+def detectar_familia_producto(texto: str):
+    texto = normalize_text(texto)
+    familias = {
+        "interruptor": [
+            "INTERRUPTOR",
+            "TERMOMAGNETICO",
+            "DISYUNTOR",
+            "BREAKER",
+        ],
+        "contacto": [
+            "CONTACTO",
+            "TOMACORRIENTE",
+            "RECEPTACULO",
+        ],
+        "apagador": [
+            "APAGADOR",
+            "INTERRUPTOR DE LUZ",
+        ],
+        "caja_electrica": [
+            "CAJA",
+            "CHALUPA",
+            "REGISTRO",
+        ],
+        "conector": [
+            "CONECTOR",
+            "GLANDULA",
+        ],
+        "cable": [
+            "CABLE",
+            "CONDUCTOR",
+            "ALAMBRE",
+            "ARMOFLEX",
+        ],
+        "tuberia_electrica": [
+            "TUBO",
+            "CONDUIT",
+            "POLIFLEX",
+            "LICUATITE",
+        ],
+        "condulet": [
+            "CONDULET",
+        ],
+        "lampara": [
+            "LAMPARA",
+            "LUMINARIA",
+            "REFLECTOR",
+        ],
+        "sensor": [
+            "SENSOR",
+        ],
+        "relevador": [
+            "RELEVADOR",
+            "RELE",
+        ],
+        "ventilador": [
+            "VENTILADOR",
+            "EXTRACTOR",
+        ],
+        "canaleta": [
+            "CANALETA",
+        ],
+        "poste": [
+            "POSTE",
+        ],
+        "soporte": [
+            "SOPORTE",
+            "BASE METALICA",
+            "PTR",
+        ],
+        "limpieza": [
+            "LIMPIEZA",
+            "ASEO",
+        ],
+        # Familias de obra civil. Se agregaron porque al hacer el
+        # matching de texto mas flexible (scorer combinado + sinonimos de
+        # unidad) crecio el riesgo de que, por ejemplo, "acero de refuerzo
+        # en LOSAS" hiciera match con "acero de refuerzo en MUROS": el
+        # texto es casi identico salvo el elemento estructural, y antes de
+        # este cambio no habia ninguna validacion que lo detectara (la
+        # unica familia de compatibilidad tecnica que existia era para
+        # materiales electricos).
+        "concreto": [
+            "CONCRETO",
+            "HORMIGON",
+        ],
+        "acero_refuerzo": [
+            "ACERO DE REFUERZO",
+            "VARILLA CORRUGADA",
+            "VARILLA",
+        ],
+        "excavacion": [
+            "EXCAVACION",
+        ],
+        "piso": [
+            "PISO",
+            "PORCELANATO",
+            "PORCELANICO",
+            "LOSETA",
+            "AZULEJO",
+        ],
+        "pintura": [
+            "PINTURA",
+        ],
+        "impermeabilizacion": [
+            "IMPERMEABIL",
+        ],
+        "tablaroca": [
+            "TABLAROCA",
+            "DRYWALL",
+        ],
+    }
+    for familia, palabras in familias.items():
+        for palabra in palabras:
+            if palabra in texto:
+                return familia
+    return None
+
+
+def detectar_subtipo_cable(texto: str):
+    texto = normalize_text(texto)
+    if "COBRE DESNUDO" in texto or "CABLE DESNUDO" in texto:
+        return "COBRE_DESNUDO"
+    if "USO RUDO" in texto:
+        return "USO_RUDO"
+    if "ARMOFLEX" in texto:
+        return "ARMOFLEX"
+    if "THW-LS" in texto or "THW LS" in texto:
+        return "THW_LS"
+    return None
+
+
+def detectar_subtipo_tuberia(texto: str):
+    texto = normalize_text(texto)
+    if "LICUATITE" in texto or "LIQUIDTIGHT" in texto:
+        return "LICUATITE"
+    if "POLIFLEX" in texto:
+        return "POLIFLEX"
+    if "CONDUIT" in texto:
+        return "CONDUIT"
+    if (
+        "PVC SANITARIO" in texto
+        or "TUBO SANITARIO" in texto
+        or "ALBANAL" in texto
+    ):
+        return "PVC_SANITARIO"
+    if "PVC" in texto:
+        return "PVC"
+    return None
+
+
+def detectar_subtipo_caja(texto: str):
+    texto = normalize_text(texto)
+    if "ALBANAL" in texto:
+        return "REGISTRO_ALBANAL"
+    if "OCTAGONAL" in texto:
+        return "CAJA_OCTAGONAL"
+    if "CAJA FSCA" in texto:
+        return "CAJA_FSCA"
+    if re.search(r"\bCAJA\s+FS\b", texto):
+        return "CAJA_FS"
+    if "CAJA REGISTRO" in texto:
+        return "REGISTRO_ELECTRICO"
+    if "CHALUPA" in texto:
+        return "CHALUPA"
+    if "GALVANIZ" in texto:
+        return "CAJA_GALVANIZADA"
+    return None
+
+
+def detectar_elemento_estructural(texto: str):
+    """Para las familias 'concreto' y 'acero_refuerzo': en que elemento
+    estructural va el material (losa, muro, zapata, columna, trabe/viga,
+    cimentacion, castillo, dala, banqueta/guarnicion). Sin esto, "acero de
+    refuerzo en LOSAS" y "acero de refuerzo en MUROS" son textualmente
+    casi identicos y el matching por similitud los confundiria."""
+    texto = normalize_text(texto)
+    elementos = {
+        "LOSA": ["LOSA"],
+        "MURO": ["MURO"],
+        "ZAPATA": ["ZAPATA"],
+        "COLUMNA": ["COLUMNA"],
+        "TRABE_VIGA": ["TRABE", "VIGA"],
+        "CIMENTACION": ["CIMENTACION", "CIMIENTO"],
+        "CASTILLO": ["CASTILLO"],
+        "DALA": ["DALA"],
+        "BANQUETA_GUARNICION": ["BANQUETA", "GUARNICION"],
+        "PISO_FIRME": ["FIRME", "PISO"],
+    }
+    for elemento, palabras in elementos.items():
+        for palabra in palabras:
+            if palabra in texto:
+                return elemento
+    return None
+
+
+def extraer_medida_caja(texto: str):
+    texto = normalize_text(texto)
+    coincidencia = re.search(
+        r"\b(\d+(?:\.\d+)?)\s*X\s*(\d+(?:\.\d+)?)"
+        r"(?:\s*X\s*(\d+(?:\.\d+)?))?\b",
+        texto,
+    )
+    if not coincidencia:
+        return None
+    medidas = [
+        valor
+        for valor in coincidencia.groups()
+        if valor is not None
+    ]
+    return "X".join(medidas)
+
+
+def validar_compatibilidad_tecnica(
+    descripcion_entrada: str,
+    descripcion_referencia: str,
+):
+    familia_entrada = detectar_familia_producto(
+        descripcion_entrada
+    )
+    familia_referencia = detectar_familia_producto(
+        descripcion_referencia
+    )
+    texto_entrada = normalize_text(descripcion_entrada)
+    texto_referencia = normalize_text(descripcion_referencia)
+    entrada_es_registro_electrico = (
+        "REGISTRO" in texto_entrada
+        and (
+            "ELECTRIC" in texto_entrada
+            or "CAJA" in texto_entrada
+        )
+    )
+    referencia_es_albanal = (
+        "REGISTRO" in texto_referencia
+        and "ALBANAL" in texto_referencia
+    )
+    entrada_es_albanal = (
+        "REGISTRO" in texto_entrada
+        and "ALBANAL" in texto_entrada
+    )
+    referencia_es_registro_electrico = (
+        "REGISTRO" in texto_referencia
+        and (
+            "ELECTRIC" in texto_referencia
+            or "CAJA" in texto_referencia
+        )
+    )
+    if (
+        entrada_es_registro_electrico
+        and referencia_es_albanal
+    ) or (
+        entrada_es_albanal
+        and referencia_es_registro_electrico
+    ):
+        return (
+            False,
+            "registro eléctrico incompatible con registro de albañal",
+        )
+
+    # La referencia debe pertenecer a la misma familia.
+    if (
+        familia_entrada is not None
+        and familia_referencia != familia_entrada
+    ):
+        return (
+            False,
+            f"familia diferente: "
+            f"{familia_entrada} vs {familia_referencia}",
+        )
+    # Validación específica para cables.
+    if familia_entrada == "cable":
+        subtipo_entrada = detectar_subtipo_cable(
+            descripcion_entrada
+        )
+        subtipo_referencia = detectar_subtipo_cable(
+            descripcion_referencia
+        )
+        if (
+            subtipo_entrada is not None
+            and subtipo_referencia != subtipo_entrada
+        ):
+            return (
+                False,
+                f"subtipo de cable diferente o no identificado: "
+                f"{subtipo_entrada} vs {subtipo_referencia}",
+            )
+    # Validación específica para tuberías.
+    if familia_entrada == "tuberia_electrica":
+        subtipo_entrada = detectar_subtipo_tuberia(
+            descripcion_entrada
+        )
+        subtipo_referencia = detectar_subtipo_tuberia(
+            descripcion_referencia
+        )
+        if (
+            subtipo_entrada is not None
+            and subtipo_referencia != subtipo_entrada
+        ):
+            return (
+                False,
+                f"subtipo de tubería diferente o no identificado: "
+                f"{subtipo_entrada} vs {subtipo_referencia}",
+            )
+    # Validación específica para concreto y acero de refuerzo: deben ser
+    # del mismo elemento estructural (losa, muro, zapata, columna, etc.)
+    # cuando se pueda identificar en ambos textos.
+    if familia_entrada in ("concreto", "acero_refuerzo"):
+        elemento_entrada = detectar_elemento_estructural(
+            descripcion_entrada
+        )
+        elemento_referencia = detectar_elemento_estructural(
+            descripcion_referencia
+        )
+        if (
+            elemento_entrada is not None
+            and elemento_referencia is not None
+            and elemento_referencia != elemento_entrada
+        ):
+            return (
+                False,
+                f"elemento estructural diferente: "
+                f"{elemento_entrada} vs {elemento_referencia}",
+            )
+    # Validación específica para cajas y registros.
+    if familia_entrada == "caja_electrica":
+        subtipo_entrada = detectar_subtipo_caja(
+            descripcion_entrada
+        )
+        subtipo_referencia = detectar_subtipo_caja(
+            descripcion_referencia
+        )
+        if (
+            subtipo_entrada is not None
+            and subtipo_referencia != subtipo_entrada
+        ):
+            return (
+                False,
+                f"subtipo de caja diferente o no identificado: "
+                f"{subtipo_entrada} vs {subtipo_referencia}",
+            )
+        medida_entrada = extraer_medida_caja(
+            descripcion_entrada
+        )
+        medida_referencia = extraer_medida_caja(
+            descripcion_referencia
+        )
+        if (
+            medida_entrada is not None
+            and medida_referencia != medida_entrada
+        ):
+            return (
+                False,
+                f"medida de caja diferente o no identificada: "
+                f"{medida_entrada} vs {medida_referencia}",
+            )
+    validaciones = [
+        (
+            "amperaje",
+            extraer_amperaje(descripcion_entrada),
+            extraer_amperaje(descripcion_referencia),
+        ),
+        (
+            "número de conductores",
+            extraer_numero_conductores(
+                descripcion_entrada
+            ),
+            extraer_numero_conductores(
+                descripcion_referencia
+            ),
+        ),
+        (
+            "polos",
+            extraer_polos(descripcion_entrada),
+            extraer_polos(descripcion_referencia),
+        ),
+        (
+            "calibre AWG",
+            extraer_calibre_awg(descripcion_entrada),
+            extraer_calibre_awg(descripcion_referencia),
+        ),
+        (
+            "diámetro en milímetros",
+            extraer_diametro_mm(descripcion_entrada),
+            extraer_diametro_mm(descripcion_referencia),
+        ),
+        (
+            "diámetro en pulgadas",
+            extraer_diametro_pulgadas(
+                descripcion_entrada
+            ),
+            extraer_diametro_pulgadas(
+                descripcion_referencia
+            ),
+        ),
+    ]
+    for nombre, entrada, referencia in validaciones:
+        if (
+            entrada is not None
+            and referencia != entrada
+        ):
+            return (
+                False,
+                f"{nombre} diferente o no identificado: "
+                f"{entrada} vs {referencia}",
+            )
+    return True, None
 
 
 def clasificar(precio: float, low: float, high: float) -> str:
@@ -69,18 +665,87 @@ def clasificar(precio: float, low: float, high: float) -> str:
     return 'EN MERCADO'
 
 
+# Margen fijo (+/-) alrededor del precio de referencia para considerarse
+# "EN MERCADO" -- pedido explicito de direccion en vez de las bandas
+# anteriores (percentiles p25-p75 en NL, +/-15% en CDMX, +/-10% en
+# historico): un solo numero, igual en las tres fuentes, mas facil de
+# explicar en una junta que "depende de que tan dispersos esten los
+# precios historicos de ese concepto".
+MARGEN_EN_MERCADO = 0.05
+
+
+def banda_en_mercado(precio_referencia: float, margen: float = MARGEN_EN_MERCADO):
+    """Regresa (banda_baja, banda_alta) = precio_referencia +/- margen."""
+    return precio_referencia * (1 - margen), precio_referencia * (1 + margen)
+
+
+# Si el precio cotizado esta a mas de este multiplo del precio de
+# referencia (para arriba o para abajo), se manda a revision de IA aunque
+# el match tenga confianza ALTA/MEDIA -- un texto parecido no garantiza
+# que sea el mismo producto/tamano/calibre cuando el precio esta a este
+# nivel de distancia (ej. una "TEE" generica de $115 contra una "TEE"
+# industrial cotizada en $56,000: mismo nombre, escala totalmente distinta).
+FACTOR_DIFERENCIA_EXTREMA = 5.0
+
+
+def es_diferencia_extrema(precio_cotizado: float, precio_referencia: float,
+                           factor: float = FACTOR_DIFERENCIA_EXTREMA) -> bool:
+    if not precio_referencia or not precio_cotizado:
+        return False
+    return (
+        precio_cotizado > precio_referencia * factor
+        or precio_cotizado < precio_referencia / factor
+    )
+
+
+def score_combinado(s1, s2, *, processor=None, score_cutoff=None):
+    """Scorer compuesto: en vez de depender de un solo algoritmo de
+    similitud, calcula tres y se queda con el mejor. Esto ayuda cuando la
+    cotizacion trae las palabras en otro orden, le faltan palabras que la
+    base si tiene (o al reves), o solo coincide un fragmento largo. Un
+    solo scorer (ej. token_set_ratio) falla distinto en cada uno de esos
+    casos; combinarlos sube el recall sin bajar el umbral a ciegas."""
+    a = processor(s1) if processor else s1
+    b = processor(s2) if processor else s2
+    return max(
+        fuzz.token_set_ratio(a, b),
+        fuzz.token_sort_ratio(a, b),
+        fuzz.partial_token_sort_ratio(a, b),
+    )
+
+
+UMBRAL_CONFIANZA_ALTA = 90.0
+UMBRAL_CONFIANZA_MEDIA = 78.0
+UMBRAL_CONFIANZA_BAJA = 60.0  # piso absoluto: por debajo de esto no se ofrece nada
+
+
+def nivel_confianza(score: float) -> str:
+    if score >= UMBRAL_CONFIANZA_ALTA:
+        return 'ALTA'
+    if score >= UMBRAL_CONFIANZA_MEDIA:
+        return 'MEDIA'
+    return 'BAJA'
+
+
 class ComparadorMultiFuente:
     def __init__(self, excel_path: str):
         self.nl = pd.read_excel(excel_path, sheet_name='Tabulador Homologado NL')
         # concepto_homologado ya viene normalizado (mayusculas, sin acentos) desde el homologador
         self.nl['concepto_norm'] = self.nl['concepto_homologado'].map(normalize_text)
+        self.nl['unidad_norm'] = self.nl['unidad'].map(normalize_unit)
 
         self.cdmx = pd.read_excel(excel_path, sheet_name='Tabulador CDMX (gobierno)')
         self.cdmx['unidad_norm'] = self.cdmx['unidad'].map(normalize_unit)
         self.cdmx['concepto_norm'] = self.cdmx['concepto'].map(normalize_text)
 
-        self._nl_pools = {u: df for u, df in self.nl.groupby('unidad')}
-        self._cdmx_pools = {u: df for u, df in self.cdmx.groupby('unidad_norm')}
+        self._nl_pools = {
+            u: df
+            for u, df in self.nl.groupby('unidad_norm')
+        }
+        self._cdmx_pools = {
+            u: df
+            for u, df in self.cdmx.groupby('unidad_norm')
+        }
 
         # Fuentes pendientes de datos reales del usuario:
         self.ragasa = None
@@ -99,44 +764,146 @@ class ComparadorMultiFuente:
         Se espera columnas: proveedor, concepto, unidad, precio_unitario."""
         self.competidores = df_o_ruta if isinstance(df_o_ruta, pd.DataFrame) else pd.read_excel(df_o_ruta)
         self.competidores['concepto_norm'] = self.competidores['concepto'].map(normalize_text)
-        self.competidores['unidad_norm'] = self.competidores['unidad'].map(normalize_unit)
+        self.competidores['unidad_norm'] = self.competidores[
+            'unidad'
+        ].map(normalize_unit)
 
-    def _match_pool(self, pools, t, u, min_score, scorer, text_col='concepto_norm'):
+    def _match_pool(
+        self,
+        pools,
+        t,
+        u,
+        min_score,
+        scorer,
+        text_col='concepto_norm',
+    ):
+        """Busca la mejor coincidencia dentro del pool de la unidad `u`.
+
+        Hace dos pasadas: primero con `min_score` (coincidencia
+        confiable), y si no encuentra nada, reintenta con un umbral mas
+        bajo (UMBRAL_CONFIANZA_BAJA) para no dejar la partida totalmente
+        sin dato solo porque la redaccion es muy distinta. La segunda
+        pasada siempre se marca con nivel de confianza 'BAJA' para que
+        quien revise sepa que debe confirmarla a mano; nunca se mezcla en
+        silencio con las coincidencias fuertes.
+
+        Regresa (score, row, nivel_confianza) o None si ni siquiera al
+        umbral minimo hay algo tecnicamente compatible.
+        """
         pool = pools.get(u)
         if pool is None or pool.empty:
             return None
-        choices = pool[text_col].tolist()
-        result = process.extractOne(t, choices, scorer=scorer, score_cutoff=min_score)
-        if result is None:
+        choices = pool[
+            text_col
+        ].fillna("").tolist()
+
+        def _buscar(umbral):
+            # Paso 1: preseleccion rapida con el scorer nativo de rapidfuzz
+            # (implementado en C, corre sobre miles de filas en
+            # milisegundos). Paso 2: el scorer combinado -mas lento por
+            # ser Python puro, ya que corre 3 algoritmos- solo se aplica
+            # sobre ese shortlist corto. Esto evita que comparar una
+            # cotizacion con muchos renglones se sienta lento, sin perder
+            # el beneficio del scorer combinado: si el texto real es
+            # parecido, ya va a aparecer en la preseleccion (el propio
+            # token_set_ratio es uno de los tres que se combinan despues).
+            preseleccion = process.extract(
+                t,
+                choices,
+                scorer=fuzz.token_set_ratio,
+                score_cutoff=max(umbral - 25, 30),
+                limit=40,
+            )
+            if not preseleccion:
+                return None
+            recalificados = sorted(
+                (
+                    (scorer(t, texto_candidato), indice)
+                    for texto_candidato, _, indice in preseleccion
+                ),
+                key=lambda par: -par[0],
+            )
+            for score, indice in recalificados:
+                if score < umbral:
+                    continue
+                row = pool.iloc[indice]
+                descripcion_referencia = row.get(text_col, "")
+                # Filtro de fragmentos demasiado cortos: cadenas de
+                # referencia como "3/8", "1/2" o "1" (medidas/fracciones
+                # sueltas que a veces quedan solas en la base de precios)
+                # pueden marcar 100% con token_set_ratio contra CUALQUIER
+                # cotizacion que mencione esa medida en cualquier parte de
+                # su descripcion larga, sin que el material sea remotamente
+                # el mismo (ej. "3/8" de una base de acero de refuerzo
+                # marcando "match perfecto" contra tuberia de cobre para
+                # refrigeracion que tambien mide 3/8"). Una referencia con
+                # menos de 8 caracteres normalizados no trae suficiente
+                # informacion como para confirmar que es el mismo concepto,
+                # sin importar que tan alto haya salido el score.
+                if len(str(descripcion_referencia).strip()) < 8:
+                    continue
+                compatible, _ = validar_compatibilidad_tecnica(
+                    t,
+                    descripcion_referencia,
+                )
+                if not compatible:
+                    continue
+                return float(score), row
             return None
-        _, score, idx = result
-        row = pool.iloc[idx]
-        return float(score), row
+
+        resultado = _buscar(min_score)
+        if resultado:
+            score, row = resultado
+            return score, row, nivel_confianza(score)
+
+        if min_score > UMBRAL_CONFIANZA_BAJA:
+            resultado = _buscar(UMBRAL_CONFIANZA_BAJA)
+            if resultado:
+                score, row = resultado
+                return score, row, 'BAJA'
+
+        return None
 
     def evaluar(self, descripcion: str, unidad: str, precio_cotizado: float,
-                min_score: float = 70.0, scorer=fuzz.token_set_ratio,
-                ajustar_inflacion: bool = True, funcion_busqueda_ia=None) -> dict:
+                min_score: float = UMBRAL_CONFIANZA_MEDIA, scorer=score_combinado,
+                ajustar_inflacion: bool = True, usar_ia: bool = False) -> dict:
         t = normalize_text(descripcion)
         u = normalize_unit(unidad)
-
         resultado = {
             'entrada': {'descripcion': descripcion, 'unidad': u, 'precio_cotizado': precio_cotizado},
             'fuentes': {},
         }
 
+        if t.strip() in CONCEPTOS_GENERICOS_SIN_MATERIAL:
+            motivo = (
+                'esta partida no describe un material especifico (es un '
+                'renglon generico de mano de obra/materiales varios), asi '
+                'que no se compara contra la base de precios -- cualquier '
+                'coincidencia seria casualidad de palabras genericas, no '
+                'el mismo concepto.'
+            )
+            for fuente in ('nl_historico', 'cdmx_gobierno', 'ragasa_historico', 'comparacion_proveedores'):
+                resultado['fuentes'][fuente] = {'match': None, 'motivo': motivo}
+            resultado['veredicto_combinado'] = 'SIN DATOS SUFICIENTES'
+            resultado['fuentes_consultadas'] = 0
+            return resultado
+
         # --- Fuente 1: NL historico ---
         m = self._match_pool(self._nl_pools, t, u, min_score, scorer)
         if m:
-            score, row = m
+            score, row, confianza = m
             anio_dato = str(row['fecha_max'])[:4]
             factor = factor_ajuste(anio_dato) if ajustar_inflacion else 1.0
-
             p25_uso = ajustar_precio(row['precio_p25'], anio_dato) if ajustar_inflacion else float(row['precio_p25'])
             p75_uso = ajustar_precio(row['precio_p75'], anio_dato) if ajustar_inflacion else float(row['precio_p75'])
-            veredicto = clasificar(precio_cotizado, p25_uso, p75_uso)
-
+            mediana_uso = ajustar_precio(row['precio_mediana'], anio_dato) if ajustar_inflacion else float(row['precio_mediana'])
+            # "EN MERCADO" = dentro de +/-5% del precio mediano de
+            # referencia (ver MARGEN_EN_MERCADO), no de la banda p25-p75.
+            banda_baja, banda_alta = banda_en_mercado(mediana_uso)
+            veredicto = clasificar(precio_cotizado, banda_baja, banda_alta)
             resultado['fuentes']['nl_historico'] = {
                 'match': row['concepto_homologado'], 'score': round(score, 1),
+                'confianza': confianza,
                 'precio_min': float(row['precio_min']), 'precio_p25': float(row['precio_p25']),
                 'precio_mediana': float(row['precio_mediana']), 'precio_p75': float(row['precio_p75']),
                 'precio_max': float(row['precio_max']), 'n_registros': int(row['n_registros']),
@@ -145,62 +912,94 @@ class ComparadorMultiFuente:
                 'ajuste_inflacion_aplicado': ajustar_inflacion,
                 'factor_ajuste_inpc': round(factor, 4),
                 'precio_p25_ajustado': p25_uso, 'precio_p75_ajustado': p75_uso,
-                'precio_mediana_ajustada': ajustar_precio(row['precio_mediana'], anio_dato) if ajustar_inflacion else float(row['precio_mediana']),
-                'referencia_ajuste': f'INPC INEGI, {anio_dato} -> {ETIQUETA_ACTUAL} ({FUENTE_INPC})' if ajustar_inflacion else None,
+                'precio_mediana_ajustada': mediana_uso,
+                'banda_baja': round(banda_baja, 2), 'banda_alta': round(banda_alta, 2),
+                'referencia_ajuste': f'INPC INEGI, {anio_dato} -> {_inflacion.ETIQUETA_ACTUAL} ({FUENTE_INPC})' if ajustar_inflacion else None,
                 'clasificacion': veredicto,
             }
+            precio_ref_nl = mediana_uso
+            diferencia_extrema_nl = es_diferencia_extrema(precio_cotizado, precio_ref_nl)
+
+            if confianza == 'BAJA':
+                resultado['fuentes']['nl_historico']['motivo'] = (
+                    'coincidencia debil (revisar a mano): el texto no es muy '
+                    'parecido, confirma que sea el mismo concepto antes de '
+                    'confiar en este precio de referencia.'
+                )
+            elif diferencia_extrema_nl:
+                resultado['fuentes']['nl_historico']['motivo'] = (
+                    'precio muy alejado de la referencia (revisar a mano): '
+                    'el texto coincide bien, pero el precio esta a una '
+                    'distancia inusual -- confirma que sea el mismo '
+                    'producto, tamano y calibre antes de confiar en esta '
+                    'clasificacion.'
+                )
+
+            # OJO: aqui YA NO se llama a la IA una partida a la vez -- eso
+            # se hace en LOTE desde app_v2.py (ver revision_ia.
+            # revisar_coincidencias_debiles_lote) despues de evaluar TODAS
+            # las partidas de la cotizacion, para no tardar minutos ni
+            # agotar el limite de solicitudes por minuto. Aqui solo se deja
+            # marcado 'motivo' (arriba) para que quien orquesta sepa que
+            # este match necesita revision.
         else:
-            resultado['fuentes']['nl_historico'] = {'match': None, 'motivo': f'sin coincidencia >= {min_score}% en unidad {u}'}
+            resultado['fuentes']['nl_historico'] = {'match': None, 'motivo': f'sin coincidencia ni relajada en unidad {u}'}
 
         # --- Fuente 2: CDMX gobierno ---
         m = self._match_pool(self._cdmx_pools, t, u, min_score, scorer)
         if m:
-            score, row = m
+            score, row, confianza = m
             precio_ref = float(row['precio_unitario'])
-            low, high = precio_ref * 0.85, precio_ref * 1.15
+            low, high = banda_en_mercado(precio_ref)
             resultado['fuentes']['cdmx_gobierno'] = {
                 'match': row['concepto'], 'score': round(score, 1), 'clave': row['clave'],
+                'confianza': confianza,
                 'precio_referencia': precio_ref, 'banda_baja': round(low, 2), 'banda_alta': round(high, 2),
                 'clasificacion': clasificar(precio_cotizado, low, high),
             }
-        else:
-            resultado['fuentes']['cdmx_gobierno'] = {'match': None, 'motivo': f'sin coincidencia >= {min_score}% en unidad {u}'}
+            diferencia_extrema_cdmx = es_diferencia_extrema(precio_cotizado, precio_ref)
 
-        # --- Fuente 3: busqueda con IA (Gemini + Google Search) ---
-        # funcion_busqueda_ia la provee la app (ya envuelta en cache) para no
-        # gastar llamadas repetidas al mismo concepto.
-        if funcion_busqueda_ia is not None:
-            ia = funcion_busqueda_ia(descripcion, unidad) or {}
-            if ia.get('precio_encontrado') and ia.get('precio_mxn') is not None:
-                precio_ia = float(ia['precio_mxn'])
-                low, high = precio_ia * 0.85, precio_ia * 1.15
-                resultado['fuentes']['ia_busqueda'] = {
-                    'match': ia.get('unidad_encontrada') or descripcion,
-                    'precio_referencia': precio_ia,
-                    'fuente_nombre': ia.get('fuente_nombre'),
-                    'fuente_url': ia.get('fuente_url'),
-                    'nota': ia.get('nota'),
-                    'clasificacion': clasificar(precio_cotizado, low, high),
-                }
-            else:
-                resultado['fuentes']['ia_busqueda'] = {
-                    'match': None,
-                    'motivo': ia.get('motivo') or ia.get('nota') or 'La IA no encontro un precio confiable en internet para este concepto.',
-                }
-        else:
-            resultado['fuentes']['ia_busqueda'] = {'match': None, 'motivo': 'Busqueda con IA desactivada.'}
+            if confianza == 'BAJA':
+                resultado['fuentes']['cdmx_gobierno']['motivo'] = (
+                    'coincidencia debil (revisar a mano): el texto no es muy '
+                    'parecido, confirma que sea el mismo concepto antes de '
+                    'confiar en este precio de referencia.'
+                )
+            elif diferencia_extrema_cdmx:
+                resultado['fuentes']['cdmx_gobierno']['motivo'] = (
+                    'precio muy alejado de la referencia (revisar a mano): '
+                    'el texto coincide bien, pero el precio esta a una '
+                    'distancia inusual -- confirma que sea el mismo '
+                    'producto, tamano y calibre antes de confiar en esta '
+                    'clasificacion.'
+                )
 
-        # --- Fuente 4: Ragasa (requiere datos reales del usuario) ---
+            # Igual que en NL: la revision con IA de este match se hace en
+            # LOTE desde app_v2.py, no aqui.
+        else:
+            resultado['fuentes']['cdmx_gobierno'] = {'match': None, 'motivo': f'sin coincidencia ni relajada en unidad {u}'}
+
+        # --- Fuente 3: Ragasa (requiere datos reales del usuario) ---
         if self.ragasa is not None:
             pools = {uu: dfx for uu, dfx in self.ragasa.groupby('unidad_norm')}
             m = self._match_pool(pools, t, u, min_score, scorer)
             if m:
-                score, row = m
+                score, row, confianza = m
+                precio_hist_ragasa = float(row['precio_unitario'])
                 resultado['fuentes']['ragasa_historico'] = {
                     'match': row['concepto'], 'score': round(score, 1),
-                    'precio_historico': float(row['precio_unitario']),
-                    'clasificacion': clasificar(precio_cotizado, row['precio_unitario'] * 0.9, row['precio_unitario'] * 1.1),
+                    'confianza': confianza,
+                    'precio_historico': precio_hist_ragasa,
+                    'clasificacion': clasificar(precio_cotizado, *banda_en_mercado(precio_hist_ragasa)),
                 }
+                diferencia_extrema_ragasa = es_diferencia_extrema(precio_cotizado, precio_hist_ragasa)
+                if confianza == 'BAJA' or diferencia_extrema_ragasa:
+                    resultado['fuentes']['ragasa_historico']['motivo'] = (
+                        'coincidencia riesgosa (revisar a mano): confianza '
+                        'baja o precio muy alejado de la referencia.'
+                    )
+                # La revision con IA de este match (si aplica) se hace en
+                # LOTE desde app_v2.py, no aqui.
             else:
                 resultado['fuentes']['ragasa_historico'] = {'match': None, 'motivo': 'sin coincidencia en historico Ragasa'}
         else:
@@ -234,7 +1033,16 @@ class ComparadorMultiFuente:
                           'Usa comparador.cargar_competidores(ruta_o_dataframe) con las cotizaciones reales para activar esta fuente.'
             }
 
-        clasificaciones = [f['clasificacion'] for f in resultado['fuentes'].values() if isinstance(f, dict) and f.get('clasificacion')]
+        # Si un match quedo marcado como riesgoso (confianza BAJA o
+        # precio con diferencia extrema) y la IA lo rechazo, no estuvo
+        # segura, o la revision nunca se completo (ej. limite de la
+        # cuenta gratuita), no debe contar para el veredicto combinado --
+        # ver _revision_ia.debe_descartarse().
+        clasificaciones = [
+            f['clasificacion'] for f in resultado['fuentes'].values()
+            if isinstance(f, dict) and f.get('clasificacion')
+            and not _revision_ia.debe_descartarse(f, usar_ia)[0]
+        ]
         if clasificaciones:
             conteo = {c: clasificaciones.count(c) for c in set(clasificaciones)}
             resultado['veredicto_combinado'] = max(conteo, key=conteo.get)
@@ -243,6 +1051,9 @@ class ComparadorMultiFuente:
         else:
             resultado['veredicto_combinado'] = 'SIN DATOS SUFICIENTES'
             resultado['fuentes_consultadas'] = 0
+            # La opinion de IA para partidas sin ningun dato (si aplica) se
+            # pide en LOTE desde app_v2.py, no aqui -- ver
+            # revision_ia.opinar_sin_datos_lote().
 
         return resultado
 
@@ -250,9 +1061,9 @@ class ComparadorMultiFuente:
 if __name__ == '__main__':
     import sys
     import json
+
     excel = sys.argv[1] if len(sys.argv) > 1 else 'Base_Precios_Unitarios_NL_CDMX.xlsx'
     c = ComparadorMultiFuente(excel)
-
     ejemplos = [
         ("Suministro y colocacion de acero de refuerzo en losas, varilla corrugada", "KG", 30),
         ("Limpieza final de obra durante todo el periodo de ejecucion", "M2", 9),
